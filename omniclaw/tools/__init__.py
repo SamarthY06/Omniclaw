@@ -1,1 +1,0 @@
-"""OmniClaw tools package."""

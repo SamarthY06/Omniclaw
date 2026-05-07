@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="10dp"
+    app:cardBackgroundColor="@color/ben_surface">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="14dp"
+        android:descendantFocusability="blocksDescendants">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <TextView
+                android:id="@+id/history_started_at"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:textColor="@color/ben_text_secondary"
+                android:textSize="12sp"
+                tools:text="2 min ago" />
+            <TextView
+                android:id="@+id/history_device"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/ben_accent"
+                android:textSize="12sp"
+                tools:text="• phone" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/history_first_user_line"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:textColor="@color/ben_text_primary"
+            android:textSize="16sp"
+            android:maxLines="2"
+            android:ellipsize="end"
+            tools:text="send pragati on whatsapp" />
+
+        <TextView
+            android:id="@+id/history_meta"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/ben_text_secondary"
+            android:textSize="12sp"
+            tools:text="47s • android_ax, android_vision" />
+    </LinearLayout>
+</com.google.android.material.card.MaterialCardView>

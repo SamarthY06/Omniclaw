@@ -1,0 +1,64 @@
+{
+  "_comment": "Merge these keys into your existing ~/.openclaw/openclaw.json. Do not blindly replace the file.",
+
+  "talk": {
+    "realtime": {
+      "provider": "openai",
+      "model": "gpt-realtime",
+      "voice": "alloy",
+      "brain": {
+        "strategy": "agent-consult"
+      },
+      "interruptOnSpeech": true,
+      "instructions_file": "~/.openclaw/workspace/SOUL.md"
+    }
+  },
+
+  "voicewake": {
+    "triggers": [
+      {
+        "phrase": "hey ben",
+        "model": "porcupine",
+        "_note": "OpenClaw will load the Porcupine .ppn from its own cache; configure access key in OpenClaw settings."
+      }
+    ]
+  },
+
+  "tools": {
+    "exec": {
+      "approval": "auto-allow",
+      "approvalRules": [
+        {
+          "_note": "Auto-allow read-only and low-risk peer ops",
+          "match": "python3 .*peer_cli\\.py (status|verify|caps|ping|--json-tools)\\b",
+          "action": "auto"
+        },
+        {
+          "_note": "Auto-allow read-only phone tools and standing-order task runs",
+          "match": "python3 .*peer_cli\\.py tools\\.invoke (read_|get_|list_|health_query|screenshot)",
+          "action": "auto"
+        },
+        {
+          "_note": "Auto-allow read-only mac AX queries",
+          "match": "python3 .*macos_ax\\.py (json-tools|tree|screen-size|focused-app|list-apps|screenshot)\\b",
+          "action": "auto"
+        },
+        {
+          "_note": "Confirm anything that sends, pays, transfers, or deletes",
+          "match": "python3 .*peer_cli\\.py tools\\.invoke (send_|pay_|transfer_|delete_|set_alarm|dial)",
+          "action": "confirm"
+        },
+        {
+          "_note": "Confirm broadly-scoped task.run calls (open-ended phone work)",
+          "match": "python3 .*peer_cli\\.py task\\.run\\b",
+          "action": "confirm"
+        },
+        {
+          "_note": "Confirm Mac AX writes",
+          "match": "python3 .*macos_ax\\.py (click|double-click|right-click|type|shortcut|drag|click-at|launch|focus|quit)",
+          "action": "confirm"
+        }
+      ]
+    }
+  }
+}

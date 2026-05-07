@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "workspace_root": ".",
+  "skills_dir": "./skills",
+  "default_model": "gpt-5.5",
+  "tools": {
+    "exec": {
+      "approval": "policy",
+      "policy": "default-allow,deny send_*,deny pay_*,deny delete_*"
+    }
+  },
+  "plugins": {
+    "allow": ["exec", "read", "write", "edit", "image", "session", "history"]
+  }
+}

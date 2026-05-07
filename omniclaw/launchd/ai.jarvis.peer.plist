@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.jarvis.peer</string>
+
+  <!--
+    Replace REPO_PARENT and PYTHON_BIN by running, from the repo root:
+
+      sed -i '' \
+        -e "s|__REPO_PARENT__|$(cd .. && pwd)|g" \
+        -e "s|__PYTHON_BIN__|$(which python3)|g" \
+        -e "s|__HOME__|$HOME|g" \
+        omniclaw/launchd/ai.jarvis.peer.plist
+
+    Then copy it: cp omniclaw/launchd/ai.jarvis.peer.plist ~/Library/LaunchAgents/
+    And load it:   launchctl load ~/Library/LaunchAgents/ai.jarvis.peer.plist
+  -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>-m</string>
+    <string>omniclaw.peer.daemon</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_PARENT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>__REPO_PARENT__</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.jarvis/peer.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.jarvis/peer.log</string>
+
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>

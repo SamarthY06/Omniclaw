@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jarvis.local/proto/schema.json",
+  "title": "Jarvis peer protocol",
+  "description": "Symmetric WebSocket RPC schema between Mac and Android devices.",
+  "type": "object",
+  "$defs": {
+    "AuthBlock": {
+      "type": "object",
+      "properties": {
+        "device_id": {"type": "string"},
+        "hmac_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "required": ["device_id", "hmac_sha256"]
+    },
+    "Envelope": {
+      "type": "object",
+      "properties": {
+        "v": {"type": "integer", "minimum": 1},
+        "id": {"type": "string", "format": "uuid"},
+        "kind": {"type": "string", "enum": ["req", "res", "event"]},
+        "method": {"type": "string"},
+        "ts_ms": {"type": "integer"},
+        "params": {"type": "object"},
+        "auth": {"$ref": "#/$defs/AuthBlock"}
+      },
+      "required": ["v", "id", "kind", "method", "ts_ms", "params", "auth"]
+    },
+    "HelloParams": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"type": "integer"},
+        "device_id": {"type": "string"},
+        "role": {"type": "string", "enum": ["mac", "android"]},
+        "caps": {"type": "array", "items": {"type": "string"}},
+        "pairing_secret": {"type": "string"}
+      },
+      "required": ["schema_version", "device_id", "role", "caps"]
+    },
+    "HelloResult": {
+      "type": "object",
+      "properties": {
+        "schema_version": {"type": "integer"},
+        "device_id": {"type": "string"},
+        "role": {"type": "string", "enum": ["mac", "android"]},
+        "caps": {"type": "array", "items": {"type": "string"}},
+        "schema_min": {"type": "integer"},
+        "schema_max": {"type": "integer"}
+      },
+      "required": ["schema_version", "device_id", "role", "caps", "schema_min", "schema_max"]
+    },
+    "PingParams": {
+      "type": "object",
+      "properties": {"ts_ms": {"type": "integer"}},
+      "required": ["ts_ms"]
+    },
+    "PingResult": {
+      "type": "object",
+      "properties": {
+        "sent_ts_ms": {"type": "integer"},
+        "recv_ts_ms": {"type": "integer"},
+        "peer_ts_ms": {"type": "integer"}
+      },
+      "required": ["sent_ts_ms", "recv_ts_ms", "peer_ts_ms"]
+    },
+    "TaskRunParams": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string"},
+        "intent": {"type": "string"},
+        "args": {"type": "object"},
+        "allow_remote_tools": {"type": "boolean"},
+        "deadline_ms": {"type": "integer", "minimum": 100}
+      },
+      "required": ["run_id", "intent", "args", "deadline_ms"]
+    },
+    "TaskEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "run_id": {"type": "string"},
+            "type": {"const": "lifecycle"},
+            "status": {
+              "type": "string",
+              "enum": ["started", "thinking", "tool_call", "awaiting_user", "completed", "failed", "cancelled"]
+            },
+            "detail": {"type": "string"}
+          },
+          "required": ["run_id", "type", "status"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "run_id": {"type": "string"},
+            "type": {"const": "assistant"},
+            "text_delta": {"type": "string"},
+            "audio_b64_delta": {"type": "string"},
+            "final": {"type": "boolean"}
+          },
+          "required": ["run_id", "type"]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "run_id": {"type": "string"},
+            "type": {"const": "tool"},
+            "tool_name": {"type": "string"},
+            "args": {"type": "object"},
+            "started_at_ms": {"type": "integer"},
+            "finished_at_ms": {"type": "integer"},
+            "ok": {"type": "boolean"},
+            "output": {},
+            "error": {"type": "string"}
+          },
+          "required": ["run_id", "type", "tool_name", "args", "started_at_ms"]
+        }
+      ]
+    },
+    "TaskResult": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string"},
+        "status": {"type": "string", "enum": ["completed", "failed", "cancelled"]},
+        "output": {},
+        "error": {"type": "string"},
+        "tokens_in": {"type": "integer"},
+        "tokens_out": {"type": "integer"},
+        "cost_usd": {"type": "number"}
+      },
+      "required": ["run_id", "status"]
+    },
+    "TaskCancelParams": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string"},
+        "reason": {"type": "string"}
+      },
+      "required": ["run_id", "reason"]
+    },
+    "TaskCancelResult": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string"},
+        "cancelled": {"type": "boolean"}
+      },
+      "required": ["run_id", "cancelled"]
+    },
+    "ToolsInvokeParams": {
+      "type": "object",
+      "properties": {
+        "tool_name": {"type": "string"},
+        "args": {"type": "object"},
+        "run_id": {"type": "string"},
+        "deadline_ms": {"type": "integer", "minimum": 100}
+      },
+      "required": ["tool_name", "args", "deadline_ms"]
+    },
+    "ToolsInvokeResult": {
+      "type": "object",
+      "properties": {
+        "ok": {"type": "boolean"},
+        "output": {},
+        "error": {"type": "string"}
+      },
+      "required": ["ok"]
+    },
+    "MemoryReadParams": {
+      "type": "object",
+      "properties": {
+        "keys": {"type": "array", "items": {"type": "string"}},
+        "scope": {"type": "string", "enum": ["contacts", "prefs", "flow_signatures"]}
+      },
+      "required": ["keys", "scope"]
+    },
+    "MemoryReadResult": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string"},
+              "value": {},
+              "version_ts_ms": {"type": "integer"}
+            },
+            "required": ["key", "value", "version_ts_ms"]
+          }
+        }
+      },
+      "required": ["items"]
+    },
+    "MemoryUpsertParams": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string"},
+              "value": {},
+              "scope": {"type": "string", "enum": ["contacts", "prefs", "flow_signatures"]},
+              "version_ts_ms": {"type": "integer"}
+            },
+            "required": ["key", "value", "scope", "version_ts_ms"]
+          }
+        }
+      },
+      "required": ["items"]
+    },
+    "MemoryUpsertResult": {
+      "type": "object",
+      "properties": {
+        "accepted": {"type": "integer"},
+        "rejected": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string"},
+              "reason": {"type": "string"}
+            },
+            "required": ["key", "reason"]
+          }
+        }
+      },
+      "required": ["accepted", "rejected"]
+    },
+    "HandoffScreenParams": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string"},
+        "reason": {
+          "type": "string",
+          "enum": ["otp", "payment", "password", "biometric", "permission_grant", "first_time_recipient"]
+        },
+        "instructions": {"type": "string"},
+        "screenshot_b64": {"type": "string"}
+      },
+      "required": ["run_id", "reason", "instructions"]
+    },
+    "HandoffScreenResult": {
+      "type": "object",
+      "properties": {
+        "acknowledged": {"type": "boolean"},
+        "user_action_started": {"type": "boolean"}
+      },
+      "required": ["acknowledged", "user_action_started"]
+    },
+    "WakeClaim": {
+      "type": "object",
+      "properties": {
+        "device_id": {"type": "string"},
+        "rms_dbfs": {"type": "number"},
+        "confidence": {"type": "number"},
+        "ts_ms": {"type": "integer"},
+        "priority": {"type": "integer"},
+        "schema_version": {"type": "integer"}
+      },
+      "required": ["device_id", "rms_dbfs", "confidence", "ts_ms", "priority", "schema_version"]
+    }
+  }
+}

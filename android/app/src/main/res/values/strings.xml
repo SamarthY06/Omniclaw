@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ben</string>
+    <string name="accessibility_service_label">Ben (UI automation)</string>
+    <string name="accessibility_service_description">Lets Ben read the screen and tap UI elements on your behalf.</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
+
+    <string name="onboarding_title">Welcome to Ben</string>
+    <string name="onboarding_step_perms">Step 1: Grant access</string>
+    <string name="onboarding_step_keys">Step 2: Wake phrase + OpenAI key</string>
+    <string name="onboarding_step_pair">Step 3: Pair with your Mac</string>
+    <string name="onboarding_grant_accessibility">Grant Accessibility</string>
+    <string name="onboarding_grant_battery">Disable battery optimization</string>
+    <string name="onboarding_check_offline_lang">Check offline language pack</string>
+    <string name="onboarding_default_phrase">Ben</string>
+    <string name="onboarding_phrase_label">Wake phrase</string>
+    <string name="onboarding_openai_key_label">OpenAI API key</string>
+    <string name="onboarding_continue">Continue</string>
+    <string name="onboarding_finish">Finish</string>
+    <string name="onboarding_scan_qr">Scan pairing QR from Mac</string>
+
+    <string name="settings_title">Settings</string>
+    <string name="settings_openai_key">OpenAI API key</string>
+    <string name="settings_wake_phrase">Wake phrase</string>
+    <string name="settings_wake_schedule">Wake schedule (24h, e.g. 07:00-23:00)</string>
+    <string name="settings_repair">Re-pair with Mac</string>
+    <string name="settings_peer_status">Peer status</string>
+    <string name="settings_mic_test">Mic / wake test</string>
+    <string name="settings_store_audio">Save voice audio</string>
+    <string name="settings_save">Save</string>
+
+    <string name="history_title">Conversations</string>
+    <string name="history_empty">No conversations yet. Say \"Ben\" to start one.</string>
+
+    <string name="home_status_idle">Idle. Say \"%1$s\" to start.</string>
+    <string name="home_status_listening">Listening…</string>
+    <string name="home_status_active">Session active</string>
+    <string name="home_start_now">Start now</string>
+    <string name="home_node_status">Node bridge: %1$s</string>
+    <string name="home_peer_status">Peer: %1$s</string>
+
+    <string name="notif_channel_id">ben_foreground</string>
+    <string name="notif_channel_name">Ben always-on</string>
+    <string name="notif_text_idle">Listening for \"%1$s\"</string>
+    <string name="notif_text_active">Conversation in progress</string>
+    <string name="notif_action_stop">Stop</string>
+    <string name="pairing_paste_uri">Paste pairing URI</string>
+    <string name="pairing_paste_empty">Clipboard is empty.</string>
+    <string name="pairing_paste_invalid">Clipboard does not contain a jarvis://pair link.</string>
+    <string name="pairing_camera_blocked">Camera access blocked. Use \"Paste pairing URI\" instead.</string>
+
+    <string name="pairing_prompt">Point camera at Mac\'s pairing QR</string>
+    <string name="pairing_success">Paired with Mac.</string>
+    <string name="pairing_failed">Pairing failed: %1$s</string>
+</resources>

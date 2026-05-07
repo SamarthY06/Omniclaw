@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.ben.wakeword</string>
+
+  <!--
+    Replace REPO_PARENT and PYTHON_BIN before installing:
+
+      sed -i '' \
+        -e "s|__REPO_PARENT__|$(cd .. && pwd)|g" \
+        -e "s|__PYTHON_BIN__|$(which python3)|g" \
+        -e "s|__HOME__|$HOME|g" \
+        omniclaw/launchd/ai.ben.wakeword.plist
+
+    Then install + load:
+
+      cp omniclaw/launchd/ai.ben.wakeword.plist ~/Library/LaunchAgents/
+      launchctl load ~/Library/LaunchAgents/ai.ben.wakeword.plist
+
+    First-time setup: System Settings -> Privacy & Security -> Microphone ->
+    enable for the python3 binary above. macOS will also require:
+      - Accessibility permission (already granted for our other tools),
+      - Speech Recognition permission (granted on first run).
+  -->
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PYTHON_BIN__</string>
+    <string>-m</string>
+    <string>omniclaw.voice.wakeword_mac</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__REPO_PARENT__</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PYTHONPATH</key>
+    <string>__REPO_PARENT__</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+    <key>BEN_WAKE_PHRASE</key>
+    <string>Ben</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.jarvis/wakeword.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.jarvis/wakeword.log</string>
+
+  <!--
+    The wake listener is interactive (needs the foreground audio session) so
+    keep ProcessType=Interactive. macOS will throttle background-session
+    audio capture, which we'd see as random "no partial transcripts" gaps.
+  -->
+  <key>ProcessType</key>
+  <string>Interactive</string>
+</dict>
+</plist>

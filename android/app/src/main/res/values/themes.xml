@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <style name="Theme.Ben" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/ben_primary</item>
+        <item name="colorPrimaryVariant">@color/ben_primary_dark</item>
+        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorSecondary">@color/ben_accent</item>
+        <item name="android:statusBarColor" tools:targetApi="l">@color/ben_bg</item>
+        <item name="android:windowBackground">@color/ben_bg</item>
+        <item name="android:textColor">@color/ben_text_primary</item>
+    </style>
+
+    <!-- Translucent shim used by PermissionGateActivity. The activity exists
+         only to host runtime permission dialogs; it should not visibly cover
+         whatever the user is currently looking at. -->
+    <style name="Theme.Ben.Translucent" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowAnimationStyle">@null</item>
+        <item name="android:backgroundDimEnabled">false</item>
+    </style>
+</resources>

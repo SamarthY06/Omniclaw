@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ben_primary">#2F6FFF</color>
+    <color name="ben_primary_dark">#0A3FAA</color>
+    <color name="ben_accent">#FFC857</color>
+    <color name="ben_bg">#0F1115</color>
+    <color name="ben_surface">#181B22</color>
+    <color name="ben_text_primary">#F5F5F7</color>
+    <color name="ben_text_secondary">#9CA3AF</color>
+    <color name="ben_user_bubble">#1F2A44</color>
+    <color name="ben_assistant_bubble">#22272E</color>
+    <color name="ben_tool_bubble">#2A1F2E</color>
+</resources>

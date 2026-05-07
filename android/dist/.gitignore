@@ -1,0 +1,3 @@
+# Built APKs are ~85 MB each and should never live in git history.
+# Track CHANGELOG.md but not the binaries themselves.
+*.apk

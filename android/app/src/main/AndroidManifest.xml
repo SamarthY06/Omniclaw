@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Networking for OpenAI Realtime + peer LAN traffic. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" /> <!-- mDNS -->
+
+    <!-- Foreground microphone (wake word + Realtime conversation). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <!-- ZXing QR scanning during pairing. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <!-- Accessibility tree reading + clicking. -->
+    <uses-permission android:name="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                     tools:ignore="ProtectedPermissions" />
+
+    <!-- Native device-API tools (location, contacts, telephony) surfaced to
+         the Realtime model. Each is requested at use-time via
+         PermissionGateActivity rather than up-front. -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.location" android:required="false" />
+
+    <!-- Allow user to launch other apps. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+    </queries>
+
+    <application
+        android:name=".BenApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.Ben"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity android:name=".onboarding.OnboardingActivity" android:exported="false" />
+        <activity android:name=".settings.SettingsActivity" android:exported="false" />
+        <activity android:name=".pairing.PairingActivity" android:exported="false" />
+        <activity android:name=".history.HistoryActivity" android:exported="false" />
+        <activity android:name=".history.SessionDetailActivity" android:exported="false" />
+
+        <!-- Translucent shim activity that requests runtime permissions on
+             behalf of device.* tools when they're invoked without prior
+             grant. See AndroidDeviceBridge.permissionDenied(). -->
+        <activity
+            android:name=".permission.PermissionGateActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Ben.Translucent"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:noHistory="true" />
+
+        <!-- Catches the jarvis://pair URI when the user taps a link variant. -->
+        <activity-alias
+            android:name=".pairing.PairingDeepLink"
+            android:targetActivity=".pairing.PairingActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="jarvis" android:host="pair" />
+            </intent-filter>
+        </activity-alias>
+
+        <service
+            android:name=".service.BenForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                      android:value="Always-on agent + embedded Node runtime" />
+        </service>
+
+        <service
+            android:name=".service.NodeBridgeService"
+            android:exported="false" />
+
+        <!-- BenWakewordService runs as a regular bound-by-host service. It does
+             NOT call startForeground itself - mic access is granted via the
+             host BenForegroundService's foregroundServiceType="microphone".
+             This collapses what used to be two near-identical "Listening for
+             Ben" notifications into a single one shown by BenForegroundService. -->
+        <service
+            android:name=".service.BenWakewordService"
+            android:exported="false" />
+
+        <!-- BenVoiceService is intentionally NOT a foreground service. Mic
+             access during a Realtime conversation is granted via the host
+             BenForegroundService's foregroundServiceType="microphone".
+             Having a second foreground notification here is what produced
+             the duplicate "Conversation in progress" entries in the shade. -->
+        <service
+            android:name=".service.BenVoiceService"
+            android:exported="false" />
+
+        <service
+            android:name=".service.BenScreencapService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection" />
+
+        <service
+            android:name=".service.BenAccessibilityService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <provider
+            android:name="androidx.startup.InitializationProvider"
+            android:authorities="${applicationId}.androidx-startup"
+            android:exported="false"
+            tools:node="merge" />
+
+    </application>
+</manifest>
