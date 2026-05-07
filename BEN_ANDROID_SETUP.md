@@ -369,6 +369,18 @@ Mac side feature-for-feature; the model is taught the standard on-phone flow
 | `ui.screen_size()` | S0 | Pixel dimensions. |
 | `vision.locate_text(target)` | S0 | On-device ML Kit OCR, returns click coords. |
 | `vision.read_screen(question)` | S2 | Sends screenshot + question to gpt-4o (image leaves device). |
+| `device.set_alarm(hour, minute?, label?)` | S0 | Schedule an alarm via `AlarmClock` intent. |
+| `device.set_timer(seconds, label?)` | S0 | Start a countdown timer via `AlarmClock` intent. |
+| `device.add_calendar_event(title, start?, end?, ...)` | S0 | Open the calendar's "new event" form, prefilled. |
+| `web.fetch(url, method?, body?, headers?)` | S2 | Generic HTTPS request, body capped at 64 KB. |
+| `weather.current(location?)` | S2 | Plain-English current weather via wttr.in (no API key). |
+| `memory.set(key, value, tags?)` | S0 | Save a fact in durable on-device memory (`<workspace>/memory.json`). |
+| `memory.get(key)` | S0 | Read a saved fact by exact key. |
+| `memory.search(query?, tag?, limit?)` | S0 | Substring search across keys+values; empty query lists most-recent. |
+| `memory.list(prefix?, limit?)` | S0 | List all memory keys. |
+| `memory.delete(key)` | S0 | Forget a fact. |
+| `memory.user_facts()` | S0 | Re-read the user's hand-curated `USER.md`. |
+| `memory.append_user_facts(text, heading?)` | S0 | Append a new long-term fact to `USER.md`. |
 
 Sensitivity:
 
@@ -376,8 +388,18 @@ Sensitivity:
 * **S1** — touches user data or performs an action on the device.
 * **S2** — image / data leaves the device for an external API call.
 
+`memory.*` mirrors Mac's OpenClaw `memory_*` family. Storage lives at
+`/data/data/com.ben/files/openclaw/workspace/memory.json` (atomic writes,
+in-process cache) and `USER.md` at the same dir. The model is fed both at
+session start so it knows the user's name, contacts, addresses, payment
+defaults, and last-N saved facts without having to ask. To pre-populate
+USER.md, edit the file directly (the UI for this lives in Settings ->
+"User facts"); the agent will pick up your edits on the next wake.
+
 Verified end-to-end with `assets/node/test/automation_simulation.test.js`,
 which drives the full "open WhatsApp -> find Pragati -> type 'Hi' -> Send"
 flow against mocked AccessibilityService + ML Kit handlers, plus an
 Electron-style "AX tree empty -> vision.locate_text fallback" scenario
-proving the Mac-equivalent vision path.
+proving the Mac-equivalent vision path, plus a `memory.*` round-trip
+covering set/get/search/list/delete/user_facts and the `session.context`
+prepend bundle.

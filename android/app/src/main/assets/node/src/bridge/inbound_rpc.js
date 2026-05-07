@@ -87,6 +87,37 @@ function handleLine(socket, line, workspace) {
       .catch((err) => reply(socket, id, { result: { ok: false, error: (err && err.message) ? err.message : String(err) } }));
     return;
   }
+  // session_context: bundle USER.md + the most-recent memory facts so Kotlin
+  // can prepend them to the Realtime sysPrompt at session start without
+  // having to make N round-trips. Returns { user_facts, memory: {matches, total} }.
+  if (method === 'session.context') {
+    Promise.resolve()
+      .then(async () => {
+        const ctx = { user_facts: '', user_facts_present: false, memory: { matches: [], total: 0 } };
+        try {
+          const mem = require('../openclaw/memory_tools.js');
+          const facts = await mem._memoryUserFacts();
+          if (facts && facts.ok) {
+            ctx.user_facts = facts.facts || '';
+            ctx.user_facts_present = !!facts.present;
+          }
+          const limit = parseInt(params.memory_limit, 10);
+          const search = await mem._memorySearch({
+            query: '',
+            limit: Number.isFinite(limit) ? limit : 8,
+          });
+          if (search && Array.isArray(search.matches)) {
+            ctx.memory = search;
+          }
+        } catch (e) {
+          console.warn('[inbound_rpc] session.context build failed:', e && e.message);
+        }
+        return ctx;
+      })
+      .then((ctx) => reply(socket, id, { result: ctx }))
+      .catch((err) => reply(socket, id, { error: { message: (err && err.message) ? err.message : String(err) } }));
+    return;
+  }
   try {
     let result = {};
     switch (method) {

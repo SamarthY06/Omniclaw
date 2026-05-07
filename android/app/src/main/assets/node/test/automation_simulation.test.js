@@ -382,6 +382,94 @@ async function scenarioWebFetch() {
   assert.strictEqual(r.error, 'invalid_url');
 }
 
+async function scenarioMemoryRoundTrip() {
+  console.log('  scenario: memory.set/get/search/list/delete + user_facts round-trip');
+
+  // 1. Set then get an exact key.
+  let r = await invokeTool('memory.set', {
+    key: 'home_address',
+    value: '21 Whitefield, Bengaluru 560066',
+    tags: ['address', 'personal'],
+  });
+  assert.strictEqual(r.ok, true, 'memory.set: ' + JSON.stringify(r));
+  assert.strictEqual(r.result.saved, true);
+  assert.strictEqual(r.result.key, 'home_address');
+
+  r = await invokeTool('memory.get', { key: 'home_address' });
+  assert.strictEqual(r.ok, true, 'memory.get: ' + JSON.stringify(r));
+  // memory.get is the rare handler that returns its own envelope including ok.
+  // The registry passes that envelope through, so r is the envelope itself.
+  assert.strictEqual(r.found, true);
+  assert.strictEqual(r.value, '21 Whitefield, Bengaluru 560066');
+  assert.deepStrictEqual(r.tags, ['address', 'personal']);
+
+  // 2. Save a richer fact and search across keys+values.
+  r = await invokeTool('memory.set', {
+    key: 'last_swiggy_order',
+    value: { restaurant: 'Paradise Biryani', items: ['Hyderabadi Chicken Biryani'], total: 420, when: '2026-04-30' },
+    tags: ['order'],
+  });
+  assert.strictEqual(r.ok, true);
+
+  // Substring hit in *value* (the order JSON contains "biryani").
+  r = await invokeTool('memory.search', { query: 'biryani' });
+  assert.strictEqual(r.ok, true, 'memory.search: ' + JSON.stringify(r));
+  assert.ok(r.result.matches.some((m) => m.key === 'last_swiggy_order'),
+    'biryani search did not return last_swiggy_order: ' + JSON.stringify(r.result.matches));
+
+  // Substring hit in *key* should outscore a value-only hit.
+  await invokeTool('memory.set', { key: 'biryani_preference', value: 'spicy, no raita' });
+  r = await invokeTool('memory.search', { query: 'biryani', limit: 5 });
+  assert.strictEqual(r.result.matches[0].key, 'biryani_preference',
+    'key match should rank above value match');
+
+  // Empty-query search returns the most-recently-updated entries.
+  r = await invokeTool('memory.search', { query: '' });
+  assert.ok(r.result.matches.length >= 3);
+
+  // Tag filter.
+  r = await invokeTool('memory.search', { query: '', tag: 'address' });
+  assert.strictEqual(r.result.matches.length, 1);
+  assert.strictEqual(r.result.matches[0].key, 'home_address');
+
+  // 3. Listing keys.
+  r = await invokeTool('memory.list', {});
+  assert.strictEqual(r.ok, true);
+  assert.ok(r.result.keys.includes('home_address'));
+  assert.ok(r.result.keys.includes('last_swiggy_order'));
+
+  // 4. Delete.
+  r = await invokeTool('memory.delete', { key: 'biryani_preference' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result.deleted, true);
+  r = await invokeTool('memory.get', { key: 'biryani_preference' });
+  assert.strictEqual(r.found, false);
+
+  // 5. User facts: append then read back.
+  r = await invokeTool('memory.append_user_facts', {
+    text: 'Home address: 21 Whitefield, Bengaluru',
+    heading: 'Addresses',
+  });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result.appended, true);
+
+  r = await invokeTool('memory.user_facts', {});
+  // memory.user_facts handler returns an envelope with ok already, so registry
+  // passes it through directly.
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.present, true);
+  assert.ok(r.facts.includes('21 Whitefield'),
+    'user_facts missing appended fact: ' + r.facts.slice(0, 200));
+
+  // 6. session.context (the bundle BenVoiceService prepends to sysPrompt).
+  const ctx = await rpcCall('session.context', { memory_limit: 5 });
+  assert.ok(ctx.result, 'session.context missing result');
+  assert.strictEqual(ctx.result.user_facts_present, true);
+  assert.ok(ctx.result.user_facts.includes('21 Whitefield'),
+    'session.context user_facts missing fact');
+  assert.ok(ctx.result.memory.matches.length > 0, 'session.context memory empty');
+}
+
 async function scenarioToolListShape() {
   console.log('  scenario: tools.list shape sanity');
   const tools = await listTools();
@@ -397,6 +485,8 @@ async function scenarioToolListShape() {
     'device.battery_status',
     'device.set_alarm', 'device.set_timer', 'device.add_calendar_event',
     'web.fetch', 'weather.current',
+    'memory.set', 'memory.get', 'memory.search', 'memory.list', 'memory.delete',
+    'memory.user_facts', 'memory.append_user_facts',
   ]) {
     assert.ok(names.includes(must), 'missing tool: ' + must);
   }
@@ -410,13 +500,19 @@ async function scenarioToolListShape() {
 
 async function run() {
   await startFakeKotlin();
+  // Memory tools resolve their workspace via BEN_WORKSPACE; point both the
+  // registry and the inbound RPC at the same temp dir. We set the env var
+  // BEFORE startInbound so memory_tools.js sees it on first require.
+  const memWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'ben-mem-'));
+  process.env.BEN_WORKSPACE = memWorkspace;
   await startInbound();
-  // Force-reset registry then load all tools (built-in + device + web).
+  // Force-reset registry then load all tools (built-in + device + web + memory).
   const registry = require(path.join(__dirname, '..', 'src', 'openclaw', 'registry.js'));
   registry.clear();
   require(path.join(__dirname, '..', 'src', 'openclaw', 'builtin_tools.js')).registerBuiltinTools();
   require(path.join(__dirname, '..', 'src', 'openclaw', 'device_tools.js')).registerDeviceTools();
   require(path.join(__dirname, '..', 'src', 'openclaw', 'web_tools.js')).registerWebTools();
+  require(path.join(__dirname, '..', 'src', 'openclaw', 'memory_tools.js')).registerMemoryTools(memWorkspace);
 
   await scenarioToolListShape();
   await scenarioWhatsApp();
@@ -425,8 +521,9 @@ async function run() {
   await scenarioPeerDelegate();
   await scenarioAlarmTimerCalendar();
   await scenarioWebFetch();
+  await scenarioMemoryRoundTrip();
 
-  console.log('automation_simulation.test PASS (7 scenarios, ' + kotlinCalls.length + ' Kotlin RPCs)');
+  console.log('automation_simulation.test PASS (8 scenarios, ' + kotlinCalls.length + ' Kotlin RPCs)');
   inboundServer.close(); fakeKotlin.close();
 }
 

@@ -91,6 +91,14 @@ class BenVoiceService : Service() {
     // still chat, just can't call tools.
     private var sessionTools: JSONArray = JSONArray()
 
+    // Hand-curated user facts (USER.md) + most-recent durable memories,
+    // fetched from the Node bridge in connect() and prepended to the
+    // sysPrompt so the model knows the user's name, contacts, addresses,
+    // payment defaults, etc. without having to ask. Mirrors how Mac feeds
+    // OpenClaw's USER.md into every session.
+    private var userFactsText: String = ""
+    private var recentMemoriesText: String = ""
+
     // Per-call buffer of streamed function_call_arguments.delta chunks.
     // Keyed by call_id from the Realtime stream. function_call_arguments.done
     // assembles the final string from this buffer and dispatches.
@@ -171,6 +179,23 @@ class BenVoiceService : Service() {
             JSONArray()
         }
         Log.i(tag, "session tools count=${sessionTools.length()}")
+        // Best-effort fetch of USER.md + recent memories. Failures are
+        // non-fatal: the model still gets the static system prompt.
+        try {
+            val ctx = fetchSessionContextFromBridge()
+            userFactsText = ctx.optString("user_facts", "").trim()
+            val mem = ctx.optJSONObject("memory")
+            recentMemoriesText = if (mem != null) formatMemoryMatches(mem) else ""
+            Log.i(
+                tag,
+                "session.context user_facts_present=${ctx.optBoolean("user_facts_present", false)} " +
+                    "memory_total=${mem?.optInt("total", 0) ?: 0}",
+            )
+        } catch (e: Exception) {
+            Log.w(tag, "session.context failed (${e.message}); proceeding without user facts")
+            userFactsText = ""
+            recentMemoriesText = ""
+        }
         val req = Request.Builder()
             .url("wss://api.openai.com/v1/realtime?model=gpt-realtime")
             .header("Authorization", "Bearer $apiKey")
@@ -211,6 +236,60 @@ class BenVoiceService : Service() {
             }
             return resp.optJSONObject("result")?.optJSONArray("tools") ?: JSONArray()
         }
+    }
+
+    /**
+     * Synchronously fetch USER.md + recent durable-memory facts from the Node
+     * bridge so we can fold them into the Realtime sysPrompt at session
+     * start. Mirrors fetchToolsFromBridge but uses session.context method.
+     * Returns an empty JSONObject if the bridge is unreachable.
+     */
+    private fun fetchSessionContextFromBridge(): JSONObject {
+        val req = JSONObject()
+            .put("id", UUID.randomUUID().toString())
+            .put("method", "session.context")
+            .put("params", JSONObject().put("memory_limit", 8))
+        Socket().use { sock ->
+            sock.connect(java.net.InetSocketAddress(InetAddress.getLoopbackAddress(), NODE_BRIDGE_PORT), 1500)
+            sock.soTimeout = 2500
+            val out = OutputStreamWriter(sock.getOutputStream(), Charsets.UTF_8)
+            out.write(req.toString())
+            out.write("\n")
+            out.flush()
+            val reader = BufferedReader(InputStreamReader(sock.getInputStream(), Charsets.UTF_8))
+            val line = reader.readLine() ?: return JSONObject()
+            val resp = JSONObject(line)
+            if (resp.has("error")) {
+                Log.w(tag, "session.context bridge error: ${resp.optString("error")}")
+                return JSONObject()
+            }
+            return resp.optJSONObject("result") ?: JSONObject()
+        }
+    }
+
+    /**
+     * Render the memory.search result envelope as a compact bullet list the
+     * model can read. We deliberately keep this short - 8 entries max, key +
+     * stringified value truncated to 120 chars - so it doesn't dwarf the
+     * actual instructions.
+     */
+    private fun formatMemoryMatches(mem: JSONObject): String {
+        val matches = mem.optJSONArray("matches") ?: return ""
+        if (matches.length() == 0) return ""
+        val sb = StringBuilder()
+        for (i in 0 until matches.length()) {
+            val m = matches.optJSONObject(i) ?: continue
+            val key = m.optString("key", "")
+            val rawValue = m.opt("value")
+            val valueStr = when (rawValue) {
+                null, JSONObject.NULL -> ""
+                is String -> rawValue
+                else -> rawValue.toString()
+            }
+            val trimmed = if (valueStr.length > 120) valueStr.substring(0, 117) + "..." else valueStr
+            sb.append("- ").append(key).append(": ").append(trimmed).append('\n')
+        }
+        return sb.toString().trimEnd()
     }
 
     /**
@@ -310,7 +389,7 @@ class BenVoiceService : Service() {
             // The brevity / no-filler clause is what kills the
             // "I'll help you with that, just a moment, sure thing..."
             // monologue users were getting on 0.1.1.
-            val sysPrompt = """
+            val basePrompt = """
                 You are Ben, a personal assistant running on the user's Android phone.
                 You have a full toolset that mirrors the Mac side:
                   CROSS-DEVICE
@@ -341,6 +420,14 @@ class BenVoiceService : Service() {
                   WEB
                   * web.fetch(url, method?, body?, headers?) - generic HTTPS request
                   * weather.current(location?)       - current weather via wttr.in (no API key)
+                  DURABLE MEMORY (persists across sessions and reboots)
+                  * memory.set(key, value, tags?)    - remember a fact ("home_address", etc.)
+                  * memory.get(key)                  - recall a saved fact by exact key
+                  * memory.search(query?, tag?, ...) - fuzzy substring search over keys+values
+                  * memory.list(prefix?)             - list saved keys
+                  * memory.delete(key)               - forget a fact
+                  * memory.user_facts()              - re-read the user's hand-curated USER.md
+                  * memory.append_user_facts(text)   - persist a new long-term user fact
 
                 Hard rule: prefer the native Android app for any cross-app task. Never fall back to the browser.
 
@@ -368,6 +455,13 @@ class BenVoiceService : Service() {
                     Teams desktop, Slack desktop, Spotify laptop) -> peer.delegate.
                   GENERIC INFO (news / scores / facts) -> web.fetch a relevant URL or
                     peer.delegate to the Mac.
+                  REMEMBERING THINGS:
+                    * "Remember my home is 21 Whitefield" -> memory.append_user_facts({text:"Home address: 21 Whitefield, Bengaluru", heading:"Addresses"})
+                    * "Default delivery address" / "favourite biryani place" / one-off
+                      preferences -> memory.set({key:"home_address", value:"21 Whitefield, Bengaluru"}).
+                    * "Order biryani like last Friday" -> memory.search({query:"biryani"})
+                      to find the saved order, then run the on-app flow.
+                    * "Forget my old card" -> memory.delete({key:"default_card"}).
 
                 LANGUAGE RULE (highest priority, never override): Always reply in English (en-US).
                 Never reply in any other language regardless of what you hear, even if the audio
@@ -390,11 +484,32 @@ class BenVoiceService : Service() {
                 quiet until they speak again.
 
                 TOOL RULE: When a user request needs device data, device action, on-screen UI
-                work, or web information, call the appropriate tool instead of asking the user
-                to provide the information manually. Only ask the user when a tool returns
-                an unrecoverable error (e.g. permission_not_granted - tell them to allow
-                the system dialog and try again).
+                work, web information, or recall of something the user told you before, call
+                the appropriate tool instead of asking the user to provide the information
+                manually. Only ask the user when a tool returns an unrecoverable error
+                (e.g. permission_not_granted - tell them to allow the system dialog and try
+                again).
+
+                MEMORY DISCIPLINE:
+                  * Treat USER FACTS below as authoritative for identity, contacts, addresses,
+                    payment defaults, devices.
+                  * Treat RECENT MEMORIES below as the most recently saved/updated facts you
+                    have on the user. Use them silently; do not recite them unprompted.
+                  * When the user states a personal fact you should remember beyond this
+                    session ("my partner is Pragati", "I live at X", "my work hours are
+                    9-7"), persist it via memory.append_user_facts (long-term identity)
+                    or memory.set (specific keyed state). Do not announce that you saved it
+                    unless the user asked.
+                  * Before asking the user for data you may already know (address, payment,
+                    a past order), call memory.search first.
             """.trimIndent()
+            val factsBlock = if (userFactsText.isNotBlank()) {
+                "\n\nUSER FACTS (from USER.md, hand-curated by the user):\n" + userFactsText
+            } else ""
+            val memBlock = if (recentMemoriesText.isNotBlank()) {
+                "\n\nRECENT MEMORIES (most-recently saved durable facts; key: value):\n" + recentMemoriesText
+            } else ""
+            val sysPrompt = basePrompt + factsBlock + memBlock
             // turn_detection: server VAD with a 1 s silence_duration_ms decides
             // when to start the assistant's response (i.e. when did the user
             // stop talking THIS turn). The much longer 180 s
