@@ -3,12 +3,19 @@
  * Unit tests for src/wake/phrase_matcher.js. Same fixtures should be runnable
  * against the Kotlin WakePhraseMatcher.kt; if you change the algorithm in one,
  * mirror the change in the other and re-run BOTH suites.
+ *
+ * v0.1.3 rule:
+ *   - len(token) < 4 (short, e.g. "Ben"): 1 edit + first-char match required.
+ *     Catches "ben"/"bend"/"bin"/"ban"/"been" but rejects "pen"/"hen"/"ten".
+ *   - 4 <= len(token) <= 6 ("Sasha", "Jarvis"): exact match only.
+ *   - len(token) >= 7 ("Friday"... wait Friday=6, "Computer"): 1 edit allowed.
  */
 const assert = require('node:assert');
 const { matches } = require('../src/wake/phrase_matcher.js');
 
 // -- positives: should fire ---------------------------------------------------
 const positives = [
+  // Direct hits
   ['Ben',                 'Ben'],
   ['ben',                 'Ben'],
   ['hey ben',             'Ben'],
@@ -17,40 +24,45 @@ const positives = [
   ['ok ben please',       'Ben'],
   ['Hey Ben',             'Hey Ben'],
   ['hey, ben!',           'Hey Ben'],
-  // Other short wake phrases that fit in the <=6-char strict regime.
+  // Short-token lenient with first-char guard - the v0.1.3 fix.
+  // SpeechRecognizer often returns these instead of bare "ben"; before
+  // v0.1.3 they all silently failed and the wake never fired.
+  ['bend',                'Ben'],
+  ['bin',                 'Ben'],
+  ['ban',                 'Ben'],
+  ['been',                'Ben'],
+  ['hey bend',            'Hey Ben'],
+  ['hey bin please',      'Ben'],
+  // 4-6 char strict regime
   ['sasha',               'Sasha'],
   ['hey sasha',           'Sasha'],
   ['jarvis',              'Jarvis'],
   ['friday please',       'Friday'],
-  // 7+ char tokens still tolerate one Damerau-Levenshtein edit.
+  // 7+ char tokens tolerate one Damerau-Levenshtein edit.
   ['comput',              'compute'],   // delete 'e'
   ['computor',            'computer'],  // 'o' for 'e'
 ];
 
 // -- negatives: should NOT fire ----------------------------------------------
 const negatives = [
-  ['amber',               'Ben'],   // word boundary protection
-  ['absurd',              'Ben'],
-  ['banana',              'Ben'],
-  ['rebel',               'Ben'],
-  ['benjamin',            'Ben'],   // we want a clean word, not a substring
+  // Word-boundary / first-char protection.
+  ['amber',               'Ben'],   // first char 'a' != 'b'
+  ['absurd',              'Ben'],   // first char 'a' != 'b'
+  ['rebel',               'Ben'],   // first char 'r' != 'b'
+  ['banana',              'Ben'],   // DL("ben","banana")=4
+  ['benjamin',            'Ben'],   // DL too high (we want a clean word, not a substring)
   ['',                    'Ben'],
   [null,                  'Ben'],
   ['hey',                 'Hey Ben'],
   ['ben hey',             'Hey Ben'], // wrong order
-  // Short-token strict-match (regression guard for the 2026-05 Hindi-reply
-  // storm bug): 1-edit neighbors must NOT fire a 3-char wake word, otherwise
-  // the recognizer's noise output starts a feedback loop.
-  ['been',                'Ben'],
-  ['ban',                 'Ben'],
-  ['bin',                 'Ben'],
+  // Different first letter -> no match even at DL=1. The whole point of
+  // the v0.1.3 first-char rule.
   ['pen',                 'Ben'],
-  ['bend',                'Ben'],
-  ['bn',                  'Ben'],
-  ['hey ban',             'Ben'],
-  ['hey bend',            'Hey Ben'],
-  // 5- and 6-char tokens are now strict-only too (regression guard for the
-  // 2026-05 "Sasha" runaway: 1-edit allowance let "tasha"/"saska" trigger).
+  ['hen',                 'Ben'],
+  ['ten',                 'Ben'],
+  ['len',                 'Ben'],
+  // 4-6 char tokens stay strict (regression guard for the 2026-05 "Sasha"
+  // runaway: 1-edit allowance let "tasha"/"saska" trigger).
   ['tasha',               'Sasha'],
   ['saska',               'Sasha'],
   ['sasher',              'Sasha'],

@@ -101,6 +101,9 @@ class NodeBridgeService : Service() {
                 "device.clipboard_get" to { args -> AndroidDeviceBridge.clipboardGet(this, args) },
                 "device.clipboard_set" to { args -> AndroidDeviceBridge.clipboardSet(this, args) },
                 "device.battery_status" to { args -> AndroidDeviceBridge.batteryStatus(this, args) },
+                "device.set_alarm" to { args -> AndroidDeviceBridge.setAlarm(this, args) },
+                "device.set_timer" to { args -> AndroidDeviceBridge.setTimer(this, args) },
+                "device.add_calendar_event" to { args -> AndroidDeviceBridge.addCalendarEvent(this, args) },
             ),
         ).also { it.start() }
 

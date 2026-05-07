@@ -13,11 +13,13 @@ Algorithm (same on all three sides):
        MAX_TOTAL_EDITS overall.
     4. Match must start at a token boundary (so 'amber' does not fire 'ben').
 
-Per-target-token edit limit:
-    target token length <= 6: 0 edits (exact). Keeps "Ben"/"Sasha"/"Jarvis"/
-        "Friday" all in exact-only mode - short wake words match too much
-        ambient noise at 1 edit.
-    target token length >= 7: MAX_TOKEN_EDITS edits.
+Per-target-token edit limit (v0.1.3):
+    len(token) < 4 (e.g. "Ben"): 1 edit + first-char rule. Catches
+        "ben"/"bend"/"bin"/"ban"/"been" but rejects "pen"/"hen"/"ten".
+        Without this, the recognizer's natural mis-recognition of short wake
+        words causes the wake to silently never fire on a noisy mic.
+    4 <= len(token) <= 6 ("Sasha", "Jarvis", "Friday"): exact match only.
+    len(token) >= 7 ("Computer", etc.): MAX_TOKEN_EDITS edits.
 
 The function returns True on first matching window.
 """
@@ -27,14 +29,24 @@ import re
 
 MAX_TOKEN_EDITS = 1
 MAX_TOTAL_EDITS = 2
-STRICT_LENGTH_THRESHOLD = 6
+EXACT_LOWER = 4
+EXACT_UPPER = 7
 
 _NORM_RE = re.compile(r"[^a-z0-9 ]")
 _WS_RE = re.compile(r"\s+")
 
 
 def _max_token_edits_for(token: str) -> int:
-    return 0 if len(token) <= STRICT_LENGTH_THRESHOLD else MAX_TOKEN_EDITS
+    n = len(token)
+    if n < EXACT_LOWER:
+        return MAX_TOKEN_EDITS
+    if n < EXACT_UPPER:
+        return 0
+    return MAX_TOKEN_EDITS
+
+
+def _requires_first_char_match(token: str) -> bool:
+    return len(token) < EXACT_LOWER
 
 
 def matches(candidate: str | None, target: str) -> bool:
@@ -51,8 +63,12 @@ def matches(candidate: str | None, target: str) -> bool:
         total = 0
         ok = True
         for i, tt in enumerate(target_tokens):
-            edits = _damerau_levenshtein(tt, cand_tokens[start + i])
+            ct = cand_tokens[start + i]
+            edits = _damerau_levenshtein(tt, ct)
             if edits > _max_token_edits_for(tt):
+                ok = False
+                break
+            if _requires_first_char_match(tt) and tt and ct and tt[0] != ct[0]:
                 ok = False
                 break
             total += edits

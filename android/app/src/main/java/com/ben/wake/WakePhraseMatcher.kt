@@ -10,14 +10,20 @@ package com.ben.wake
  *      window compute the per-pair Damerau-Levenshtein distance, allow up to
  *      maxTokenEditsFor(targetToken) edits per pair AND at most
  *      MAX_TOTAL_EDITS overall.
- *   4. Match must START on a token boundary - protects against "amber" -> "ben".
+ *   4. Each matched pair must also start with the same first character -
+ *      so "ben" -> "bend"/"bin"/"benz" matches but "ben" -> "pen"/"hen"
+ *      does not. This is what cuts the false-positive rate for short
+ *      wake words without forcing exact match.
+ *   5. Match must START on a token boundary.
  *
  * Per-target-token edit limit:
- *   - target token length <= 6: 0 edits (exact). Required because short
- *     wake words pick up too many false positives at 1 edit: "ben" matches
- *     "ban"/"bend"/"pen"; "sasha" matches "tasha"/"saska"/"sasher". The
- *     6-character cutoff keeps "Ben" / "Sasha" / "Jarvis" / "Friday" all
- *     in exact-match mode, which is what we want for a noisy ambient mic.
+ *   - target token length <= 3 (e.g. "Ben"): 1 edit + first-char rule.
+ *     Required for short wake words to actually fire on a noisy mic where
+ *     the recognizer hears "bend" / "bin" / "ben." but rarely "ben" alone.
+ *     The first-char rule keeps the false-positive rate sane.
+ *   - 4 <= target token length <= 6: 0 edits (exact). "Sasha" / "Jarvis" /
+ *     "Friday" stay strict; they're long enough that recognition error
+ *     is rare and false positives matter more.
  *   - target token length >= 7: MAX_TOKEN_EDITS edits.
  *
  * Identical Kotlin / JS / Python implementations - keep them in sync.
@@ -25,7 +31,8 @@ package com.ben.wake
 object WakePhraseMatcher {
     private const val MAX_TOKEN_EDITS = 1
     private const val MAX_TOTAL_EDITS = 2
-    private const val STRICT_LENGTH_THRESHOLD = 6
+    private const val EXACT_LOWER = 4    // length <  this -> short rule (1 edit + first char)
+    private const val EXACT_UPPER = 7    // length >= this -> generous rule (1 edit, no first-char)
 
     fun matches(candidate: String?, target: String): Boolean {
         if (candidate.isNullOrBlank()) return false
@@ -38,8 +45,12 @@ object WakePhraseMatcher {
             var ok = true
             for (i in targetTokens.indices) {
                 val tt = targetTokens[i]
-                val edits = damerauLevenshtein(tt, candTokens[start + i])
+                val ct = candTokens[start + i]
+                val edits = damerauLevenshtein(tt, ct)
                 if (edits > maxTokenEditsFor(tt)) { ok = false; break }
+                if (requiresFirstCharMatch(tt) && tt.isNotEmpty() && ct.isNotEmpty() && tt[0] != ct[0]) {
+                    ok = false; break
+                }
                 totalEdits += edits
                 if (totalEdits > MAX_TOTAL_EDITS) { ok = false; break }
             }
@@ -48,8 +59,13 @@ object WakePhraseMatcher {
         return false
     }
 
-    private fun maxTokenEditsFor(token: String): Int =
-        if (token.length <= STRICT_LENGTH_THRESHOLD) 0 else MAX_TOKEN_EDITS
+    private fun maxTokenEditsFor(token: String): Int = when {
+        token.length < EXACT_LOWER -> MAX_TOKEN_EDITS         // short: lenient with first-char guard
+        token.length < EXACT_UPPER -> 0                       // mid: exact only
+        else -> MAX_TOKEN_EDITS                               // long: lenient
+    }
+
+    private fun requiresFirstCharMatch(token: String): Boolean = token.length < EXACT_LOWER
 
     private fun normalize(s: String): String =
         s.lowercase().replace(Regex("[^a-z0-9 ]"), " ").replace(Regex("\\s+"), " ").trim()

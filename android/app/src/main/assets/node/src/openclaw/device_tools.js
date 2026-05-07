@@ -162,6 +162,53 @@ function registerDeviceTools() {
     description: 'Returns { percent: <0-100>, charging: <bool>, charging_source?: "ac"|"usb"|"wireless", temperature_c?: <number> }.',
     parameters: { type: 'object', properties: {}, additionalProperties: false },
   }, async () => bridgeRpc('device.battery_status', {}, { timeoutMs: 5_000 }));
+
+  register({
+    name: 'device.set_alarm',
+    description: 'Schedule an alarm on the user\'s phone via the system clock app. No special permission required. Use this whenever the user says "set an alarm for X o\'clock", "wake me up at 7", "remind me at 7am", etc. Returns { scheduled: true, hour, minute, label }.',
+    parameters: {
+      type: 'object',
+      properties: {
+        hour: { type: 'integer', description: '0-23 (24-hour clock).' },
+        minute: { type: 'integer', description: '0-59. Default 0.' },
+        label: { type: 'string', description: 'Optional alarm name shown when it rings.' },
+      },
+      required: ['hour'],
+      additionalProperties: false,
+    },
+  }, async (args) => bridgeRpc('device.set_alarm', args || {}, { timeoutMs: 5_000 }));
+
+  register({
+    name: 'device.set_timer',
+    description: 'Start a countdown timer in the system clock app. No special permission required. Use this for "set a 10-minute timer", "remind me in 30 seconds", etc. Returns { started: true, seconds, label }.',
+    parameters: {
+      type: 'object',
+      properties: {
+        seconds: { type: 'integer', description: 'Total duration in seconds (1..86400).' },
+        label: { type: 'string', description: 'Optional timer label.' },
+      },
+      required: ['seconds'],
+      additionalProperties: false,
+    },
+  }, async (args) => bridgeRpc('device.set_timer', args || {}, { timeoutMs: 5_000 }));
+
+  register({
+    name: 'device.add_calendar_event',
+    description: 'Open the calendar app prefilled to create a new event. The user taps Save to confirm; we deliberately do NOT auto-write so the user can review. Use this for "schedule a meeting tomorrow at 3pm", "remind me to call mom Friday afternoon", "block 30 mins for lunch", etc. Returns { opened: true, title, start_ms, end_ms }.',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Event title.' },
+        start: { type: 'string', description: 'ISO-8601 (e.g. 2026-05-08T15:00:00) or HH:mm (today). Default: 1 hour from now.' },
+        end: { type: 'string', description: 'ISO-8601 end. Optional; if missing, duration_minutes is used.' },
+        duration_minutes: { type: 'integer', description: 'Duration in minutes when end is not provided. Default 30.' },
+        description: { type: 'string', description: 'Free-text body.' },
+        location: { type: 'string', description: 'Address or place name.' },
+      },
+      required: ['title'],
+      additionalProperties: false,
+    },
+  }, async (args) => bridgeRpc('device.add_calendar_event', args || {}, { timeoutMs: 5_000 }));
 }
 
 module.exports = { registerDeviceTools };

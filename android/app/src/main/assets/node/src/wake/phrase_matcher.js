@@ -2,21 +2,30 @@
 /**
  * Mirror of WakePhraseMatcher.kt and omniclaw/voice/wake_phrase_matcher.py.
  *
- * Per-target-token edit limit:
- *   - target token length <= 6: 0 edits (exact).
- *     Keeps "Ben"/"Sasha"/"Jarvis"/"Friday" exact-only - short wake words
- *     match too much ambient noise at 1 edit.
- *   - target token length >= 7: MAX_TOKEN_EDITS edits.
+ * Per-target-token edit limit (v0.1.3):
+ *   - length < 4 (e.g. "Ben"): 1 edit + first-char rule.
+ *     Catches "ben"/"bend"/"bin"/"benz" but rejects "pen"/"hen". Without
+ *     this, short wake words almost never fire on a noisy mic because
+ *     the recognizer rarely returns the bare word "ben" alone.
+ *   - 4 <= length <= 6 (e.g. "Sasha"): 0 edits, strict.
+ *   - length >= 7 (e.g. "Jarvis", "Friday"): MAX_TOKEN_EDITS edits.
  *
  * If you tune any of the three implementations, mirror the change in the
  * other two and re-run all three test suites.
  */
 const MAX_TOKEN_EDITS = 1;
 const MAX_TOTAL_EDITS = 2;
-const STRICT_LENGTH_THRESHOLD = 6;
+const EXACT_LOWER = 4;
+const EXACT_UPPER = 7;
 
 function maxTokenEditsFor(token) {
-  return token.length <= STRICT_LENGTH_THRESHOLD ? 0 : MAX_TOKEN_EDITS;
+  if (token.length < EXACT_LOWER) return MAX_TOKEN_EDITS;
+  if (token.length < EXACT_UPPER) return 0;
+  return MAX_TOKEN_EDITS;
+}
+
+function requiresFirstCharMatch(token) {
+  return token.length < EXACT_LOWER;
 }
 
 function matches(candidate, target) {
@@ -29,8 +38,12 @@ function matches(candidate, target) {
     let total = 0; let ok = true;
     for (let i = 0; i < t.length; i++) {
       const tt = t[i];
-      const e = damLev(tt, c[s + i]);
+      const ct = c[s + i];
+      const e = damLev(tt, ct);
       if (e > maxTokenEditsFor(tt)) { ok = false; break; }
+      if (requiresFirstCharMatch(tt) && tt.length > 0 && ct.length > 0 && tt[0] !== ct[0]) {
+        ok = false; break;
+      }
       total += e;
       if (total > MAX_TOTAL_EDITS) { ok = false; break; }
     }

@@ -49,7 +49,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *      fresh wake word.
  *   b) Explicit stop intent ("stop", "shut up", "i'm not talking to you", etc.)
  *      detected in the user's transcribed audio.
- *   c) Hard 180 s ceiling regardless of activity (defensive runaway-guard).
+ *   c) Hard 600 s (10 min) ceiling regardless of activity (defensive runaway guard).
  *   d) WebSocket failure / closure.
  *
  * Notification ownership: this service is intentionally NOT a foreground
@@ -77,11 +77,11 @@ class BenVoiceService : Service() {
     @Volatile private var isAssistantSpeaking: Boolean = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val silenceEndRunnable = Runnable {
-        Log.i(tag, "3s post-response silence reached - ending session")
+        Log.i(tag, "180s post-response silence reached - ending session")
         stopAndRearm()
     }
     private val hardCapRunnable = Runnable {
-        Log.w(tag, "180s hard session cap reached - ending session")
+        Log.w(tag, "600s hard session cap reached - ending session")
         stopAndRearm()
     }
 
@@ -312,14 +312,20 @@ class BenVoiceService : Service() {
             // monologue users were getting on 0.1.1.
             val sysPrompt = """
                 You are Ben, a personal assistant running on the user's Android phone.
-                You have a full UI-automation toolset that mirrors the Mac side:
+                You have a full toolset that mirrors the Mac side:
+                  CROSS-DEVICE
                   * peer.delegate                    - run any task on the user's paired Mac
+                  DEVICE STATE / ACTIONS
                   * device.get_location              - GPS / network last-known fix
                   * device.get_contacts(query?)      - search the on-device address book
                   * device.place_call(number|name)   - dial a number (or contact name)
                   * device.launch_app(package|label) - open an installed Android app
+                  * device.set_alarm(hour, minute?, label?) - schedule an alarm
+                  * device.set_timer(seconds, label?)       - countdown timer
+                  * device.add_calendar_event(title, start?, end?, ...) - new calendar event
                   * device.clipboard_get / clipboard_set
                   * device.battery_status
+                  ON-SCREEN UI AUTOMATION
                   * ui.focus_app(package)            - bring an app to the foreground
                   * ui.read_screen()                 - dump the current accessibility tree
                   * ui.click({text|ax_id})           - tap by visible text or ax_id
@@ -329,29 +335,47 @@ class BenVoiceService : Service() {
                   * ui.swipe(x1,y1, x2,y2)           - free-form gesture
                   * ui.screenshot()                  - capture the current screen
                   * ui.screen_size()                 - pixel dimensions
+                  VISION
                   * vision.locate_text(target)       - on-device OCR; returns click_x/click_y
                   * vision.read_screen(question)     - multimodal Q&A over a screenshot
+                  WEB
+                  * web.fetch(url, method?, body?, headers?) - generic HTTPS request
+                  * weather.current(location?)       - current weather via wttr.in (no API key)
+
                 Hard rule: prefer the native Android app for any cross-app task. Never fall back to the browser.
-                STANDARD ON-PHONE FLOW (memorise this):
-                  1. device.launch_app or ui.focus_app to open the target app.
-                  2. ui.read_screen to see what's on screen.
-                  3. ui.click by text/ax_id when a match exists.
-                  4. If ui.click misses (Compose / WebView), ui.screenshot then
-                     vision.locate_text(target). Use the returned click_x/click_y
-                     with ui.click_at.
-                  5. ui.type to enter text after focusing the input.
-                  6. ui.click("Send") (or whatever the action button is).
-                  7. Confirm success with ui.read_screen or vision.read_screen,
-                     report a one-sentence summary to the user.
-                CROSS-DEVICE: when the user says "on my Mac, ..." or asks about Mac-only
-                apps (Cursor, Microsoft Teams desktop, Slack desktop, Spotify on the
-                laptop), call peer.delegate({task: "<verbatim task in plain English>"}).
+
+                STANDARD FLOWS:
+                  WEATHER ("what's the weather"):
+                    1. If user said a city, weather.current({location: city}).
+                    2. Otherwise call device.get_location, then weather.current({location: "lat,lon"}).
+                    3. Reply with the .summary field, one sentence.
+                  ALARMS / TIMERS / REMINDERS:
+                    * "Set an alarm for 7am" -> device.set_alarm(hour:7, minute:0, label:"morning").
+                    * "Wake me up in 20 minutes" -> device.set_timer(seconds: 20*60).
+                    * "Remind me tomorrow at 3pm to call mom" -> device.add_calendar_event(title: "Call mom", start: "2026-05-09T15:00:00").
+                    * NEVER tell the user "I cannot set alarms"; you can.
+                  ON-PHONE UI TASKS (e.g. "send Pragati a WhatsApp message"):
+                    1. device.launch_app or ui.focus_app to open the target app.
+                    2. ui.read_screen to see what's on screen.
+                    3. ui.click by text/ax_id when a match exists.
+                    4. If ui.click misses (Compose / WebView), ui.screenshot then
+                       vision.locate_text(target). Use the returned click_x/click_y
+                       with ui.click_at.
+                    5. ui.type to enter text after focusing the input.
+                    6. ui.click("Send") (or whatever the action button is).
+                    7. Confirm success with ui.read_screen, report briefly.
+                  CROSS-DEVICE: "on my Mac, ..." or Mac-only apps (Cursor, Microsoft
+                    Teams desktop, Slack desktop, Spotify laptop) -> peer.delegate.
+                  GENERIC INFO (news / scores / facts) -> web.fetch a relevant URL or
+                    peer.delegate to the Mac.
+
                 LANGUAGE RULE (highest priority, never override): Always reply in English (en-US).
                 Never reply in any other language regardless of what you hear, even if the audio
                 contains other languages. If the audio is unclear, silent, or appears to not be
                 directed at you (no addressee, no command, no question), do not generate a reply
                 at all - stay silent and wait. Do not greet the user automatically; only respond
                 to a clearly directed user utterance.
+
                 BREVITY RULE: Be concise. Each reply is at most two short sentences unless the
                 user explicitly asks for a longer answer (e.g. "tell me a story", "explain X
                 in detail"). Do not say filler phrases like "I'll help you with that",
@@ -359,20 +383,29 @@ class BenVoiceService : Service() {
                 that delays the substantive answer. If you need to think or call a tool, stay
                 silent and call the tool - do not narrate. After answering, stop and wait for
                 the user; do not pad the silence.
-                TOOL RULE: When a user request needs device data, device action, or
-                on-screen UI work, call the appropriate tool instead of asking the user
+
+                CONVERSATION WINDOW: this session stays open for up to 3 minutes of silence
+                between turns and 10 minutes total. The user may pause to think between
+                questions; do NOT close the conversation early or push them. Just stay
+                quiet until they speak again.
+
+                TOOL RULE: When a user request needs device data, device action, on-screen UI
+                work, or web information, call the appropriate tool instead of asking the user
                 to provide the information manually. Only ask the user when a tool returns
                 an unrecoverable error (e.g. permission_not_granted - tell them to allow
                 the system dialog and try again).
             """.trimIndent()
-            // turn_detection: server VAD with a 3 s silence_duration_ms is
-            // what the user explicitly asked for. After Ben replies, the user
-            // has 3 s of silence before we tear down the session.
+            // turn_detection: server VAD with a 1 s silence_duration_ms decides
+            // when to start the assistant's response (i.e. when did the user
+            // stop talking THIS turn). The much longer 180 s
+            // POST_RESPONSE_SILENCE_MS decides when the whole session ends.
+            // 1 s is the standard Realtime default; 3 s here used to be
+            // tied to "session ends after 3 s silence" and conflated the two.
             val turnDetection = JSONObject()
                 .put("type", "server_vad")
                 .put("threshold", 0.6)
                 .put("prefix_padding_ms", 300)
-                .put("silence_duration_ms", 3000)
+                .put("silence_duration_ms", 1000)
                 .put("create_response", true)
                 .put("interrupt_response", true)
             val transcription = JSONObject()
@@ -588,8 +621,11 @@ class BenVoiceService : Service() {
         const val ACTION_START_FROM_USER = "com.ben.voice.START_FROM_USER"
         const val ACTION_STOP = "com.ben.voice.STOP"
 
-        private const val POST_RESPONSE_SILENCE_MS = 3_000L
-        private const val HARD_SESSION_CAP_MS = 180_000L
+        // v0.1.3: 3 minutes between turns (was 3 s) and 10 minutes total
+        // (was 3 min). The user was getting cut off mid-thought because
+        // 3 s of silence after a response ended the whole session.
+        private const val POST_RESPONSE_SILENCE_MS = 180_000L
+        private const val HARD_SESSION_CAP_MS = 600_000L
 
         // NodeBridgeService inbound RPC port. Same constant used by every
         // other Kotlin->Node call (peer pairing, wakeword reload, etc).

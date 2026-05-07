@@ -318,6 +318,132 @@ object AndroidDeviceBridge {
         return JSONObject().put("ok", true).put("result", res)
     }
 
+    // ---------- ALARM ----------
+    /**
+     * Schedule an alarm via android.provider.AlarmClock.ACTION_SET_ALARM. No
+     * runtime permission required - the system handles it. Most devices show
+     * the alarm UI for confirmation; some (Samsung One UI 6+) skip the UI
+     * when EXTRA_SKIP_UI is set, which we do for hands-free voice flows.
+     */
+    fun setAlarm(ctx: Context, args: JSONObject): JSONObject {
+        val hour = args.optInt("hour", -1)
+        val minute = args.optInt("minute", 0)
+        val label = args.optString("label", "Ben alarm")
+        if (hour !in 0..23 || minute !in 0..59) {
+            return errorResult("invalid_time", "Pass hour 0..23 and minute 0..59 (24-hour clock).")
+        }
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_ALARM).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_HOUR, hour)
+            putExtra(android.provider.AlarmClock.EXTRA_MINUTES, minute)
+            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            ctx.startActivity(intent)
+            JSONObject().put("ok", true).put("result", JSONObject()
+                .put("scheduled", true)
+                .put("hour", hour)
+                .put("minute", minute)
+                .put("label", label))
+        } catch (e: Exception) {
+            errorResult("alarm_failed", e.message ?: "No clock app on this device that handles ACTION_SET_ALARM.")
+        }
+    }
+
+    // ---------- TIMER ----------
+    fun setTimer(ctx: Context, args: JSONObject): JSONObject {
+        val seconds = args.optInt("seconds", -1)
+        val label = args.optString("label", "Ben timer")
+        if (seconds <= 0 || seconds > 24 * 3600) {
+            return errorResult("invalid_seconds", "Pass seconds in (0, 86400].")
+        }
+        val intent = Intent(android.provider.AlarmClock.ACTION_SET_TIMER).apply {
+            putExtra(android.provider.AlarmClock.EXTRA_LENGTH, seconds)
+            putExtra(android.provider.AlarmClock.EXTRA_MESSAGE, label)
+            putExtra(android.provider.AlarmClock.EXTRA_SKIP_UI, true)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            ctx.startActivity(intent)
+            JSONObject().put("ok", true).put("result", JSONObject()
+                .put("started", true)
+                .put("seconds", seconds)
+                .put("label", label))
+        } catch (e: Exception) {
+            errorResult("timer_failed", e.message ?: "No clock app on this device that handles ACTION_SET_TIMER.")
+        }
+    }
+
+    // ---------- CALENDAR ----------
+    /**
+     * Open the calendar app's "new event" form prefilled with title / time /
+     * location. We deliberately use the Insert intent (not direct write to
+     * CalendarContract) so we don't need the WRITE_CALENDAR permission and
+     * the user gets a confirmation step.
+     */
+    fun addCalendarEvent(ctx: Context, args: JSONObject): JSONObject {
+        val title = args.optString("title", "").trim()
+        if (title.isEmpty()) return errorResult("title_required")
+        val description = args.optString("description", "")
+        val location = args.optString("location", "")
+        val startMs = parseTimeArg(args.optString("start", "")) ?: System.currentTimeMillis() + 60 * 60_000
+        val endMs = parseTimeArg(args.optString("end", ""))
+            ?: (startMs + (args.optLong("duration_minutes", 30) * 60_000))
+        val intent = Intent(Intent.ACTION_INSERT).apply {
+            data = android.provider.CalendarContract.Events.CONTENT_URI
+            putExtra(android.provider.CalendarContract.Events.TITLE, title)
+            putExtra(android.provider.CalendarContract.Events.DESCRIPTION, description)
+            putExtra(android.provider.CalendarContract.Events.EVENT_LOCATION, location)
+            putExtra(android.provider.CalendarContract.EXTRA_EVENT_BEGIN_TIME, startMs)
+            putExtra(android.provider.CalendarContract.EXTRA_EVENT_END_TIME, endMs)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        return try {
+            ctx.startActivity(intent)
+            JSONObject().put("ok", true).put("result", JSONObject()
+                .put("opened", true)
+                .put("title", title)
+                .put("start_ms", startMs)
+                .put("end_ms", endMs)
+                .put("note", "Calendar UI opened with prefilled fields. User taps Save."))
+        } catch (e: Exception) {
+            errorResult("calendar_failed", e.message ?: "")
+        }
+    }
+
+    /** Accept ISO-8601 (2026-05-08T07:30:00) or HH:mm-of-today as start time. */
+    private fun parseTimeArg(s: String): Long? {
+        if (s.isBlank()) return null
+        // ISO with optional Z / offset
+        try {
+            val instant = if (s.contains('T')) {
+                if (s.endsWith("Z") || Regex("[+\\-]\\d\\d:?\\d\\d$").containsMatchIn(s)) {
+                    java.time.OffsetDateTime.parse(s).toInstant().toEpochMilli()
+                } else {
+                    java.time.LocalDateTime.parse(s).atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+                }
+            } else if (s.matches(Regex("^\\d{1,2}:\\d{2}$"))) {
+                val parts = s.split(":")
+                val now = java.util.Calendar.getInstance().apply {
+                    set(java.util.Calendar.HOUR_OF_DAY, parts[0].toInt())
+                    set(java.util.Calendar.MINUTE, parts[1].toInt())
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                }
+                if (now.timeInMillis < System.currentTimeMillis()) {
+                    now.add(java.util.Calendar.DAY_OF_MONTH, 1)
+                }
+                now.timeInMillis
+            } else {
+                return s.toLongOrNull()
+            }
+            return instant
+        } catch (_: Exception) {
+            return null
+        }
+    }
+
     // ---------- helpers ----------
     private fun hasPermission(ctx: Context, perm: String): Boolean =
         ContextCompat.checkSelfPermission(ctx, perm) == PackageManager.PERMISSION_GRANTED

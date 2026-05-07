@@ -69,6 +69,7 @@
         <activity android:name=".pairing.PairingActivity" android:exported="false" />
         <activity android:name=".history.HistoryActivity" android:exported="false" />
         <activity android:name=".history.SessionDetailActivity" android:exported="false" />
+        <activity android:name=".diag.MicTestActivity" android:exported="false" android:label="@string/mic_test_title" />
 
         <!-- Translucent shim activity that requests runtime permissions on
              behalf of device.* tools when they're invoked without prior

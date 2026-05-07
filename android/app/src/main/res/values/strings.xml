@@ -55,4 +55,21 @@
     <string name="pairing_prompt">Point camera at Mac\'s pairing QR</string>
     <string name="pairing_success">Paired with Mac.</string>
     <string name="pairing_failed">Pairing failed: %1$s</string>
+
+    <string name="mic_test_title">Mic / wake test</string>
+    <string name="mic_test_help">If you say your wake phrase and nothing happens, this screen tells you why. Live transcripts on the right are what the recognizer hears. If they are empty, it is a permission / mic / language-pack problem. If they are full but never go green, the matcher is rejecting them.</string>
+    <string name="mic_test_perm_record_audio">Microphone (RECORD_AUDIO)</string>
+    <string name="mic_test_perm_battery">Battery optimization exemption</string>
+    <string name="mic_test_perm_accessibility">Accessibility service</string>
+    <string name="mic_test_phrase">Active wake phrase</string>
+    <string name="mic_test_state_running">Wake listener running</string>
+    <string name="mic_test_state_paused">Wake listener PAUSED (voice session active)</string>
+    <string name="mic_test_state_stopped">Wake listener STOPPED</string>
+    <string name="mic_test_force_restart">Force restart wake listener</string>
+    <string name="mic_test_say_now">Say your wake phrase now…</string>
+    <string name="mic_test_status_ok">OK</string>
+    <string name="mic_test_status_missing">MISSING — fix this first</string>
+    <string name="mic_test_status_unknown">Unknown</string>
+    <string name="mic_test_open_settings">Open settings</string>
+    <string name="mic_test_clear_log">Clear log</string>
 </resources>

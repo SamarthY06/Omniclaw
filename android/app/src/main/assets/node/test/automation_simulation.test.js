@@ -98,6 +98,12 @@ function handleKotlin(sock, line) {
       return reply(sock, req.id, { ok: true, result: { set: true, length: (req.params.text || '').length } });
     case 'device.place_call':
       return reply(sock, req.id, { ok: true, result: { dialed: req.params.number || 'unknown' } });
+    case 'device.set_alarm':
+      return reply(sock, req.id, { ok: true, result: { scheduled: true, hour: req.params.hour, minute: req.params.minute || 0, label: req.params.label || 'Ben alarm' } });
+    case 'device.set_timer':
+      return reply(sock, req.id, { ok: true, result: { started: true, seconds: req.params.seconds, label: req.params.label || 'Ben timer' } });
+    case 'device.add_calendar_event':
+      return reply(sock, req.id, { ok: true, result: { opened: true, title: req.params.title, start_ms: 0, end_ms: 0 } });
     case 'ax.focus':
       phoneState.focusedPackage = req.params.package;
       return reply(sock, req.id, { ok: true, package: req.params.package });
@@ -353,6 +359,29 @@ async function scenarioPeerDelegate() {
   assert.match(r.hint, /pair/);
 }
 
+async function scenarioAlarmTimerCalendar() {
+  console.log('  scenario: device.set_alarm + set_timer + add_calendar_event');
+  let r = await invokeTool('device.set_alarm', { hour: 7, minute: 0, label: 'morning' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result.scheduled, true);
+  assert.strictEqual(r.result.hour, 7);
+
+  r = await invokeTool('device.set_timer', { seconds: 600, label: 'tea' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result.seconds, 600);
+
+  r = await invokeTool('device.add_calendar_event', { title: 'Call mom', start: '2026-05-09T15:00:00' });
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.result.title, 'Call mom');
+}
+
+async function scenarioWebFetch() {
+  console.log('  scenario: web.fetch invalid URL is gracefully rejected');
+  const r = await invokeTool('web.fetch', { url: 'not-a-url' });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, 'invalid_url');
+}
+
 async function scenarioToolListShape() {
   console.log('  scenario: tools.list shape sanity');
   const tools = await listTools();
@@ -366,6 +395,8 @@ async function scenarioToolListShape() {
     'device.get_location', 'device.get_contacts', 'device.place_call',
     'device.launch_app', 'device.clipboard_get', 'device.clipboard_set',
     'device.battery_status',
+    'device.set_alarm', 'device.set_timer', 'device.add_calendar_event',
+    'web.fetch', 'weather.current',
   ]) {
     assert.ok(names.includes(must), 'missing tool: ' + must);
   }
@@ -380,19 +411,22 @@ async function scenarioToolListShape() {
 async function run() {
   await startFakeKotlin();
   await startInbound();
-  // Force-reset registry then load all tools (built-in + device).
+  // Force-reset registry then load all tools (built-in + device + web).
   const registry = require(path.join(__dirname, '..', 'src', 'openclaw', 'registry.js'));
   registry.clear();
   require(path.join(__dirname, '..', 'src', 'openclaw', 'builtin_tools.js')).registerBuiltinTools();
   require(path.join(__dirname, '..', 'src', 'openclaw', 'device_tools.js')).registerDeviceTools();
+  require(path.join(__dirname, '..', 'src', 'openclaw', 'web_tools.js')).registerWebTools();
 
   await scenarioToolListShape();
   await scenarioWhatsApp();
   await scenarioElectronVisionFallback();
   await scenarioPermissionFlow();
   await scenarioPeerDelegate();
+  await scenarioAlarmTimerCalendar();
+  await scenarioWebFetch();
 
-  console.log('automation_simulation.test PASS (5 scenarios, ' + kotlinCalls.length + ' Kotlin RPCs)');
+  console.log('automation_simulation.test PASS (7 scenarios, ' + kotlinCalls.length + ' Kotlin RPCs)');
   inboundServer.close(); fakeKotlin.close();
 }
 

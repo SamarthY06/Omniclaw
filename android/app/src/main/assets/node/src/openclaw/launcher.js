@@ -20,6 +20,7 @@ const path = require('path');
 const registry = require('./registry.js');
 const { registerBuiltinTools } = require('./builtin_tools.js');
 const { registerDeviceTools } = require('./device_tools.js');
+const { registerWebTools } = require('./web_tools.js');
 
 let _gatewayHandle = null;
 
@@ -30,6 +31,7 @@ async function startOpenClaw({ workspace, role }) {
   try {
     registerBuiltinTools();
     registerDeviceTools();
+    registerWebTools();
     console.log('[openclaw] registered ' + registry.size() + ' built-in tools: ' + registry.names().join(', '));
   } catch (e) {
     console.warn('[openclaw] built-in tool registration failed:', e && e.message);

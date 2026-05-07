@@ -59,6 +59,9 @@ class HomeFragment : Fragment() {
             // because BenVoiceService.onCreate doesn't call startForeground().
             ctx.startService(intent)
         }
+        view.findViewById<Button>(R.id.home_mic_test)?.setOnClickListener {
+            startActivity(Intent(requireContext(), com.ben.diag.MicTestActivity::class.java))
+        }
         renderStatusIdle()
         pollStatus()
     }

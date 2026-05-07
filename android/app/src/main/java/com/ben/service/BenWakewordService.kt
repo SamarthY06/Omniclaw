@@ -11,23 +11,29 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.ben.util.BenSecrets
 import com.ben.wake.WakePhraseMatcher
+import java.util.concurrent.ConcurrentLinkedDeque
 
 /**
- * Always-on wake word listener. Uses Android's on-device SpeechRecognizer in
+ * Always-on wake word listener. Uses Android's SpeechRecognizer in
  * partial-results mode and runs an auto-restart loop because the system
  * recognizer stops on every silence boundary.
  *
  * On a partial transcript that fuzzy-matches the user's configured phrase, we
  * cancel the recognizer and hand off to BenVoiceService (OpenAI Realtime).
  *
- * NO audio leaves the device until that handoff happens.
+ * v0.1.3: every recognition event (READY / BEGIN / PARTIAL / RESULT / ERROR /
+ * RESTART / WAKE_MATCH) is appended to an in-memory ring buffer AND broadcast
+ * via LocalBroadcastManager. MicTestActivity subscribes to those broadcasts to
+ * show the user, in real time, what the recognizer is hearing - so when "Ben"
+ * does nothing the user (and we) can tell whether it's a permission issue, a
+ * mic issue, an offline-pack issue, or a wake-matcher false-negative.
  *
- * Fallback path (not in v1): if no partials show up within 3s during the first
- * post-onboarding self-test, we surface a notification suggesting the user
- * install the offline language pack OR opt in to the Vosk fallback. Detection
- * lives in BenWakewordSelfTest below; production flow stays simple.
+ * v0.1.3: also drops EXTRA_PREFER_OFFLINE on the second consecutive
+ * ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT / ERROR_LANGUAGE_NOT_SUPPORTED so a
+ * device without an offline en-US pack can still wake.
  */
 class BenWakewordService : Service() {
     private val tag = "BenWakewordService"
@@ -36,27 +42,28 @@ class BenWakewordService : Service() {
     private var phrase: String = "Ben"
     private var paused: Boolean = false
     private var wantsRestart: Boolean = true
+    private var preferOffline: Boolean = true
+    private var consecutiveErrors: Int = 0
 
-    // Defensive auto-resume: if BenVoiceService crashes (or its 180s hard
-    // cap fails to fire), we'd otherwise stay paused forever and never wake
-    // again until process restart. After DEFENSIVE_RESUME_MS we force a
-    // resume even if no ACTION_RESUME has arrived. The window is set just
-    // beyond the voice service's 180s hard cap so we do not collide with
-    // a healthy long-running session.
+    // Defensive auto-resume: if BenVoiceService crashes (or its hard cap
+    // fails to fire), we'd otherwise stay paused forever and never wake
+    // again until process restart. Set just beyond the voice service's
+    // 600s (v0.1.3) hard cap.
     private val defensiveResumeRunnable = Runnable {
         Log.w(tag, "Defensive auto-resume: no ACTION_RESUME after pause - re-arming wake listener")
+        emit(EventKind.RESTART, "defensive auto-resume after pause timeout")
         paused = false
         wantsRestart = true
+        consecutiveErrors = 0
         restartShortly()
     }
 
     override fun onCreate() {
         super.onCreate()
         // Intentionally NOT a foreground service: mic access is inherited from
-        // BenForegroundService's foregroundServiceType="microphone". Posting
-        // our own startForeground notification here would mean the user sees
-        // two near-identical "Listening for Ben" entries.
+        // BenForegroundService's foregroundServiceType="microphone".
         phrase = BenSecrets.wakePhrase(this)
+        emit(EventKind.RESTART, "service created, phrase='$phrase'")
         startListening()
     }
 
@@ -67,18 +74,28 @@ class BenWakewordService : Service() {
                 try { recognizer?.cancel() } catch (_: Exception) {}
                 handler.removeCallbacks(defensiveResumeRunnable)
                 handler.postDelayed(defensiveResumeRunnable, DEFENSIVE_RESUME_MS)
+                emit(EventKind.RESTART, "paused (voice session active)")
             }
             ACTION_RESUME -> {
                 handler.removeCallbacks(defensiveResumeRunnable)
                 paused = false
-                // Critical: handleCandidate() flips wantsRestart=false on a
-                // wake match so the recognizer stops chasing more wakes. We
-                // MUST reset it here, otherwise startListening()/restartShortly()
-                // both short-circuit and the listener never resumes.
                 wantsRestart = true
+                consecutiveErrors = 0
+                emit(EventKind.RESTART, "resumed")
                 restartShortly()
             }
-            ACTION_RELOAD_PHRASE -> { phrase = BenSecrets.wakePhrase(this) }
+            ACTION_RELOAD_PHRASE -> {
+                phrase = BenSecrets.wakePhrase(this)
+                emit(EventKind.RESTART, "phrase reloaded -> '$phrase'")
+            }
+            ACTION_FORCE_RESTART -> {
+                paused = false
+                wantsRestart = true
+                consecutiveErrors = 0
+                preferOffline = true
+                emit(EventKind.RESTART, "manual force restart from MicTestActivity")
+                restartShortly()
+            }
         }
         return START_STICKY
     }
@@ -90,6 +107,7 @@ class BenWakewordService : Service() {
         wantsRestart = false
         try { recognizer?.destroy() } catch (_: Exception) {}
         handler.removeCallbacksAndMessages(null)
+        emit(EventKind.RESTART, "service destroyed")
     }
 
     private fun startListening() {
@@ -105,12 +123,13 @@ class BenWakewordService : Service() {
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            // EXTRA_PREFER_OFFLINE flips off after consecutive errors so a
+            // device without the en-US offline pack can still wake.
+            if (preferOffline) {
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            }
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-            // Pin to English regardless of the system locale. The wake phrase
-            // is the English string "Ben"; on a hi-IN device the default
-            // recognizer was transcribing Hindi which both missed real wakes
-            // and produced Latin fragments that fuzzy-matched random noise.
+            // Pin to English regardless of the system locale.
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-US")
             putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
@@ -119,6 +138,7 @@ class BenWakewordService : Service() {
             sr.startListening(intent)
         } catch (e: Exception) {
             Log.w(tag, "startListening failed; will retry", e)
+            emit(EventKind.ERROR, "startListening exception: ${e.javaClass.simpleName}: ${e.message}")
             restartShortly()
         }
     }
@@ -133,83 +153,142 @@ class BenWakewordService : Service() {
 
     private fun handleCandidate(text: String?) {
         if (text.isNullOrBlank()) return
-        if (!WakePhraseMatcher.matches(text, phrase)) return
+        val matched = WakePhraseMatcher.matches(text, phrase)
+        emit(if (matched) EventKind.WAKE_MATCH else EventKind.PARTIAL,
+             "$text${if (matched) "  <- MATCH for '$phrase'" else ""}")
+        if (!matched) return
         Log.i(tag, "Wake phrase matched: '$text' ~= '$phrase'")
         try { recognizer?.cancel() } catch (_: Exception) {}
         wantsRestart = false
-        // Handoff: BenVoiceService will run for the duration of the session,
-        // then signal us via ACTION_RESUME when it ends so we re-arm.
-        //
-        // CRITICAL: this MUST stay startService(), NOT startForegroundService().
-        // BenVoiceService no longer calls startForeground() in onCreate (the
-        // duplicate "Conversation in progress" notification was removed in
-        // 0.1.1) and its foregroundServiceType="microphone" declaration was
-        // dropped from the manifest. If we call startForegroundService here
-        // we hand the system a contract the service cannot fulfil, and
-        // Android raises RemoteServiceException ~5s later, killing the
-        // session mid-conversation. Mic FGS is anchored by BenForegroundService
-        // which lives in the same process, so a regular service inherits
-        // mic access without itself being a FGS.
+        // CRITICAL: startService(), NOT startForegroundService(). See
+        // v0.1.2 commit notes for why - mic FGS is anchored upstream by
+        // BenForegroundService.
         val voiceIntent = Intent(this, BenVoiceService::class.java)
             .setAction(BenVoiceService.ACTION_START_FROM_WAKE)
         try {
             startService(voiceIntent)
         } catch (e: IllegalStateException) {
-            // Background-start restriction: shouldn't happen because we're
-            // running inside BenForegroundService's process, but log
-            // defensively so the next attempt has telemetry.
             Log.w(tag, "startService(BenVoiceService) blocked", e)
+            emit(EventKind.ERROR, "startService(BenVoiceService) blocked: ${e.message}")
         }
     }
 
     private val listener = object : RecognitionListener {
-        override fun onReadyForSpeech(params: Bundle?) {}
-        override fun onBeginningOfSpeech() {}
-        override fun onRmsChanged(rmsdB: Float) {}
+        override fun onReadyForSpeech(params: Bundle?) { emit(EventKind.READY, "") }
+        override fun onBeginningOfSpeech() { emit(EventKind.BEGIN, "") }
+        override fun onRmsChanged(rmsdB: Float) { /* too noisy to broadcast */ }
         override fun onBufferReceived(buffer: ByteArray?) {}
-        override fun onEndOfSpeech() { restartShortly() }
-        override fun onError(error: Int) { restartShortly(150) }
+        override fun onEndOfSpeech() {
+            emit(EventKind.RESTART, "endOfSpeech -> restart")
+            restartShortly()
+        }
+        override fun onError(error: Int) {
+            val name = errorName(error)
+            emit(EventKind.ERROR, "$name (code=$error)")
+            consecutiveErrors++
+            // After two consecutive recoverable errors, flip off offline
+            // preference so we try the network recognizer once. Most likely
+            // cause of repeated ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT on a
+            // fresh device is a missing offline en-US pack.
+            if (consecutiveErrors >= 2 && preferOffline &&
+                (error == SpeechRecognizer.ERROR_NO_MATCH ||
+                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
+                 error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
+                 error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)) {
+                preferOffline = false
+                emit(EventKind.RESTART, "two consecutive recoverable errors -> falling back to network recognizer")
+                Log.w(tag, "Falling back to network recognizer after $consecutiveErrors consecutive recoverable errors")
+            }
+            restartShortly(150)
+        }
         override fun onResults(results: Bundle?) {
             val list = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            handleCandidate(list?.firstOrNull())
+            val text = list?.firstOrNull()
+            if (!text.isNullOrBlank()) {
+                consecutiveErrors = 0
+                emit(EventKind.RESULT, text)
+                handleCandidate(text)
+            }
             restartShortly()
         }
         override fun onPartialResults(partialResults: Bundle?) {
             val list = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-            handleCandidate(list?.firstOrNull())
+            val text = list?.firstOrNull()
+            if (!text.isNullOrBlank()) {
+                consecutiveErrors = 0
+                handleCandidate(text)
+            }
         }
         override fun onEvent(eventType: Int, params: Bundle?) {}
     }
+
+    /** Append to the ring buffer + LocalBroadcastManager broadcast for MicTestActivity. */
+    private fun emit(kind: EventKind, detail: String) {
+        val ts = System.currentTimeMillis()
+        val ev = Event(ts, kind, detail)
+        eventBuffer.offer(ev)
+        while (eventBuffer.size > MAX_EVENTS) eventBuffer.poll()
+        val intent = Intent(ACTION_EVENT)
+            .putExtra(EXTRA_TS, ts)
+            .putExtra(EXTRA_KIND, kind.name)
+            .putExtra(EXTRA_DETAIL, detail)
+        LocalBroadcastManager.getInstance(applicationContext).sendBroadcast(intent)
+        Log.d(tag, "[${kind.name}] $detail")
+    }
+
+    private fun errorName(error: Int): String = when (error) {
+        SpeechRecognizer.ERROR_AUDIO -> "ERROR_AUDIO"
+        SpeechRecognizer.ERROR_CLIENT -> "ERROR_CLIENT"
+        SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "ERROR_INSUFFICIENT_PERMISSIONS (RECORD_AUDIO not granted!)"
+        SpeechRecognizer.ERROR_NETWORK -> "ERROR_NETWORK"
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "ERROR_NETWORK_TIMEOUT"
+        SpeechRecognizer.ERROR_NO_MATCH -> "ERROR_NO_MATCH"
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "ERROR_RECOGNIZER_BUSY"
+        SpeechRecognizer.ERROR_SERVER -> "ERROR_SERVER"
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "ERROR_SPEECH_TIMEOUT (no speech detected)"
+        SpeechRecognizer.ERROR_TOO_MANY_REQUESTS -> "ERROR_TOO_MANY_REQUESTS"
+        SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED -> "ERROR_LANGUAGE_NOT_SUPPORTED (install en-US offline pack)"
+        SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> "ERROR_LANGUAGE_UNAVAILABLE (install en-US offline pack)"
+        SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> "ERROR_SERVER_DISCONNECTED"
+        else -> "ERROR_$error"
+    }
+
+    enum class EventKind { READY, BEGIN, PARTIAL, RESULT, WAKE_MATCH, ERROR, RESTART }
+    data class Event(val ts: Long, val kind: EventKind, val detail: String)
 
     companion object {
         const val ACTION_PAUSE = "com.ben.wake.PAUSE"
         const val ACTION_RESUME = "com.ben.wake.RESUME"
         const val ACTION_RELOAD_PHRASE = "com.ben.wake.RELOAD_PHRASE"
+        const val ACTION_FORCE_RESTART = "com.ben.wake.FORCE_RESTART"
 
-        // Set just beyond BenVoiceService's 180s hard cap so a healthy long
-        // session does not get cut off, but a crashed session still recovers
-        // within ~20s of when it should have ended.
-        private const val DEFENSIVE_RESUME_MS: Long = 200_000L
+        const val ACTION_EVENT = "com.ben.wake.EVENT"
+        const val EXTRA_TS = "ts"
+        const val EXTRA_KIND = "kind"
+        const val EXTRA_DETAIL = "detail"
 
-        /** Pause the wake recognizer. Used by BenVoiceService while a session
-         * is live so that speaker output (TTS playback) cannot self-trigger
-         * the wake word and start a feedback loop. */
+        // Set just beyond BenVoiceService's 600s hard cap (v0.1.3) so a
+        // healthy long session does not get cut off.
+        private const val DEFENSIVE_RESUME_MS: Long = 620_000L
+        private const val MAX_EVENTS = 200
+
+        // Shared ring buffer that MicTestActivity reads on launch (so users
+        // see history even before subscribing to live events).
+        val eventBuffer = ConcurrentLinkedDeque<Event>()
+
         fun pause(ctx: Context) {
             val intent = Intent(ctx, BenWakewordService::class.java).setAction(ACTION_PAUSE)
-            try {
-                ctx.startService(intent)
-            } catch (e: Exception) {
-                Log.w("BenWakewordService", "pause failed", e)
-            }
+            try { ctx.startService(intent) } catch (e: Exception) { Log.w("BenWakewordService", "pause failed", e) }
         }
 
         fun resume(ctx: Context) {
             val intent = Intent(ctx, BenWakewordService::class.java).setAction(ACTION_RESUME)
-            try {
-                ctx.startService(intent)
-            } catch (e: Exception) {
-                Log.w("BenWakewordService", "resume failed", e)
-            }
+            try { ctx.startService(intent) } catch (e: Exception) { Log.w("BenWakewordService", "resume failed", e) }
+        }
+
+        fun forceRestart(ctx: Context) {
+            val intent = Intent(ctx, BenWakewordService::class.java).setAction(ACTION_FORCE_RESTART)
+            try { ctx.startService(intent) } catch (e: Exception) { Log.w("BenWakewordService", "forceRestart failed", e) }
         }
     }
 }
