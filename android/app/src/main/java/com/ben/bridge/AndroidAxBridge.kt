@@ -26,7 +26,10 @@ object AndroidAxBridge {
 
     private inline fun svc(ctx: Context, block: (BenAccessibilityService) -> JSONObject): JSONObject {
         val live = BenAccessibilityService.live
-            ?: return JSONObject().put("ok", false).put("error", "accessibility_service_not_running")
+            ?: return JSONObject()
+                .put("ok", false)
+                .put("error", "accessibility_service_not_running")
+                .put("hint", "Ben's Accessibility service is not enabled. Tell the user to open Settings -> Accessibility -> Installed apps -> Ben (UI automation) and turn it on, then ask again.")
         return block(live)
     }
 }

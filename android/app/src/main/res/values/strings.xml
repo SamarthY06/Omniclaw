@@ -13,8 +13,14 @@
     <string name="onboarding_step_keys">Step 2: Wake phrase + OpenAI key</string>
     <string name="onboarding_step_pair">Step 3: Pair with your Mac</string>
     <string name="onboarding_grant_accessibility">Grant Accessibility</string>
+    <string name="onboarding_grant_runtime">Allow microphone, notifications &amp; camera</string>
     <string name="onboarding_grant_battery">Disable battery optimization</string>
+    <string name="onboarding_grant_oem_autostart">Open vendor autostart settings</string>
     <string name="onboarding_check_offline_lang">Check offline language pack</string>
+    <string name="onboarding_runtime_perms_required">Please tap \"Allow microphone, notifications &amp; camera\" first - Ben can\'t hear you without it.</string>
+    <string name="onboarding_runtime_perms_granted">Microphone, notifications &amp; camera granted ✓</string>
+    <string name="onboarding_oem_autostart_unknown">Could not open vendor autostart panel. Find Ben in your phone\'s app settings and enable autostart / background activity manually.</string>
+    <string name="onboarding_runtime_perms_already_granted">All runtime permissions already granted.</string>
     <string name="onboarding_default_phrase">Ben</string>
     <string name="onboarding_phrase_label">Wake phrase</string>
     <string name="onboarding_openai_key_label">OpenAI API key</string>
@@ -49,12 +55,13 @@
     <string name="notif_action_stop">Stop</string>
     <string name="pairing_paste_uri">Paste pairing URI</string>
     <string name="pairing_paste_empty">Clipboard is empty.</string>
-    <string name="pairing_paste_invalid">Clipboard does not contain a jarvis://pair link.</string>
+    <string name="pairing_paste_invalid">Clipboard does not contain a ben://pair (or legacy jarvis://pair) link.</string>
     <string name="pairing_camera_blocked">Camera access blocked. Use \"Paste pairing URI\" instead.</string>
 
     <string name="pairing_prompt">Point camera at Mac\'s pairing QR</string>
     <string name="pairing_success">Paired with Mac.</string>
     <string name="pairing_failed">Pairing failed: %1$s</string>
+    <string name="pairing_status_unverified">Pairing handshake completed locally, but the Mac peer did not confirm within 5 s. The Mac may be offline, on a different network, or running an older daemon. Re-pair after fixing.</string>
 
     <string name="mic_test_title">Mic / wake test</string>
     <string name="mic_test_help">If you say your wake phrase and nothing happens, this screen tells you why. Live transcripts on the right are what the recognizer hears. If they are empty, it is a permission / mic / language-pack problem. If they are full but never go green, the matcher is rejecting them.</string>

@@ -34,11 +34,26 @@
             android:text="@string/onboarding_grant_accessibility" />
 
         <com.google.android.material.button.MaterialButton
+            android:id="@+id/onboarding_grant_runtime_btn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/onboarding_grant_runtime" />
+
+        <com.google.android.material.button.MaterialButton
             android:id="@+id/onboarding_grant_battery_btn"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
             android:text="@string/onboarding_grant_battery" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/onboarding_oem_autostart_btn"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:visibility="gone"
+            android:text="@string/onboarding_grant_oem_autostart" />
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/onboarding_check_offline_lang_btn"

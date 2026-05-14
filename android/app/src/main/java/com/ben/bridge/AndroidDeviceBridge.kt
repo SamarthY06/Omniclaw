@@ -6,8 +6,12 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.location.Address
+import android.location.Geocoder
 import android.location.Location
+import android.location.LocationListener
 import android.location.LocationManager
+import android.os.Bundle
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Looper
@@ -53,16 +57,144 @@ object AndroidDeviceBridge {
         val lm = ctx.getSystemService(Context.LOCATION_SERVICE) as? LocationManager
             ?: return errorResult("location_service_unavailable")
         val high = args.optBoolean("high_accuracy", false)
-        val location = lastKnownLocation(lm, high)
-            ?: return errorResult("no_fix_available", "No recent GPS / Network location fix on this device. Have the user move outdoors or wait a few seconds and retry.")
-        return JSONObject()
-            .put("ok", true)
-            .put("result", JSONObject()
-                .put("latitude", location.latitude)
-                .put("longitude", location.longitude)
-                .put("accuracy_m", location.accuracy.toDouble())
-                .put("source", location.provider ?: "unknown")
-                .put("age_ms", System.currentTimeMillis() - location.time))
+        // v0.1.7: request a FRESH fix instead of just blindly trusting
+        // getLastKnownLocation. Pre-fix, on a Samsung that had a stale
+        // last-known fix from some other app (e.g. an old Google Maps
+        // query from a different city), our location result was
+        // technically valid but factually wrong - "fake location" from
+        // the user's POV. We now (a) request a single fresh update from
+        // FUSED / GPS / NETWORK in parallel, (b) wait up to 4 s for the
+        // first one that arrives, (c) fall back to last-known if all
+        // providers time out, and (d) explicitly mark the result with
+        // `freshness: "fresh"|"last_known"` and an age field so the
+        // model can hedge ("your last known location, ~12 minutes old")
+        // rather than confidently lie.
+        var location = requestFreshLocation(lm, preferGps = high, timeoutMs = 4_000)
+        var freshness = "fresh"
+        if (location == null) {
+            location = lastKnownLocation(lm, high)
+            freshness = "last_known"
+        }
+        if (location == null) {
+            return errorResult("no_fix_available", "No recent GPS / Network location fix on this device. Have the user move outdoors or wait a few seconds and retry.")
+        }
+        // Reverse-geocode so the model gets a human-readable place name to
+        // recite, not just lat/lon. Without this, "where am I?" responses
+        // came back as "I have coordinates 12.97, 77.59" which is useless
+        // to the user. Geocoder.getFromLocation is synchronous on the
+        // legacy API and async on API 33+; we use the legacy sync version
+        // here because we're already off-main-thread.
+        val ageMs = System.currentTimeMillis() - location.time
+        val result = JSONObject()
+            .put("latitude", location.latitude)
+            .put("longitude", location.longitude)
+            .put("accuracy_m", location.accuracy.toDouble())
+            .put("source", location.provider ?: "unknown")
+            .put("age_ms", ageMs)
+            .put("freshness", freshness)
+            .put("is_stale", freshness == "last_known" && ageMs > 5 * 60 * 1000L)
+        try {
+            if (Geocoder.isPresent()) {
+                @Suppress("DEPRECATION")
+                val addrs: List<Address>? = Geocoder(ctx).getFromLocation(location.latitude, location.longitude, 1)
+                val a = addrs?.firstOrNull()
+                if (a != null) {
+                    val place = listOfNotNull(
+                        a.subLocality,
+                        a.locality,
+                        a.subAdminArea,
+                        a.adminArea,
+                        a.countryName,
+                    ).distinct().joinToString(", ")
+                    if (a.locality != null) result.put("city", a.locality)
+                    if (a.subAdminArea != null) result.put("district", a.subAdminArea)
+                    if (a.adminArea != null) result.put("state", a.adminArea)
+                    if (a.countryName != null) result.put("country", a.countryName)
+                    if (a.countryCode != null) result.put("country_code", a.countryCode)
+                    if (a.postalCode != null) result.put("postal_code", a.postalCode)
+                    val line0 = a.getAddressLine(0)
+                    if (!line0.isNullOrBlank()) result.put("full_address", line0)
+                    if (place.isNotBlank()) result.put("place", place)
+                    // The summary field is what the model should speak
+                    // verbatim - one short, naturally-phrased sentence.
+                    val summary = when {
+                        a.locality != null && a.countryName != null -> "${a.locality}, ${a.countryName}"
+                        a.subLocality != null && a.locality != null -> "${a.subLocality}, ${a.locality}"
+                        place.isNotBlank() -> place
+                        else -> "${location.latitude}, ${location.longitude}"
+                    }
+                    result.put("summary", summary)
+                }
+            }
+        } catch (e: Exception) {
+            // Reverse geocoding is best-effort; failure is fine, the model
+            // still gets lat/lon and can use that for weather/maps tools.
+            Log.w(tag, "reverse-geocode failed: ${e.message}")
+        }
+        return JSONObject().put("ok", true).put("result", result)
+    }
+
+    /**
+     * Request a single fresh location update from each available provider
+     * in parallel, return the first one that arrives within timeoutMs.
+     * Falls back to null if nothing arrives in time (caller then uses
+     * lastKnownLocation).
+     *
+     * Why this and not FusedLocationProviderClient: that one requires
+     * Google Play Services. Most Samsungs have it but some Chinese
+     * Androids (rooted MIUI / GrapheneOS) don't, and our APK is supposed
+     * to not hard-depend on Play services. LocationManager's
+     * requestSingleUpdate / requestLocationUpdates with the framework
+     * providers (GPS / NETWORK / FUSED) is sufficient.
+     */
+    private fun requestFreshLocation(lm: LocationManager, preferGps: Boolean, timeoutMs: Long): Location? {
+        val providers = lm.getProviders(true)
+        val preferred = if (preferGps) {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.FUSED_PROVIDER, LocationManager.NETWORK_PROVIDER)
+        } else {
+            listOf(LocationManager.FUSED_PROVIDER, LocationManager.NETWORK_PROVIDER, LocationManager.GPS_PROVIDER)
+        }
+        val ordered = preferred.filter { providers.contains(it) }
+        if (ordered.isEmpty()) return null
+
+        val latch = CountDownLatch(1)
+        val gotLocation = arrayOfNulls<Location>(1)
+        val listeners = mutableListOf<Pair<String, LocationListener>>()
+        // Must run requestLocationUpdates on a Looper thread. The Node-bridge
+        // executor isn't a Looper, so we use the main looper for the listener
+        // callbacks - the callback itself does no UI work.
+        val looper = Looper.getMainLooper()
+        try {
+            for (p in ordered) {
+                val listener = object : LocationListener {
+                    override fun onLocationChanged(location: Location) {
+                        synchronized(gotLocation) {
+                            if (gotLocation[0] == null) {
+                                gotLocation[0] = location
+                                latch.countDown()
+                            }
+                        }
+                    }
+                    override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+                    override fun onProviderEnabled(provider: String) {}
+                    override fun onProviderDisabled(provider: String) {}
+                }
+                try {
+                    lm.requestLocationUpdates(p, 0L, 0f, listener, looper)
+                    listeners += p to listener
+                } catch (e: SecurityException) {
+                    Log.w(tag, "requestLocationUpdates SecurityException $p: ${e.message}")
+                } catch (e: Exception) {
+                    Log.w(tag, "requestLocationUpdates failed $p: ${e.message}")
+                }
+            }
+            latch.await(timeoutMs, TimeUnit.MILLISECONDS)
+        } finally {
+            for ((_, listener) in listeners) {
+                try { lm.removeUpdates(listener) } catch (_: Exception) {}
+            }
+        }
+        return gotLocation[0]
     }
 
     private fun lastKnownLocation(lm: LocationManager, preferGps: Boolean): Location? {
@@ -249,9 +381,19 @@ object AndroidDeviceBridge {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return try {
             ctx.startActivity(intent)
+            // Sleep ~700 ms before returning ok so the app's first frame
+            // has time to paint and AccessibilityService populates the
+            // node tree. Without this delay, the model's immediately-next
+            // ui.read_screen call hits the previous app (or a blank
+            // launching screen) and decides "I can't see anything to tap".
+            // 700 ms is enough for warm-launches of WhatsApp / Swiggy
+            // / Settings on a mid-range Samsung; cold-launches still need
+            // a second ui.read_screen and that's fine.
+            try { Thread.sleep(700) } catch (_: InterruptedException) {}
             JSONObject().put("ok", true).put("result", JSONObject()
                 .put("launched", true)
-                .put("package", resolved))
+                .put("package", resolved)
+                .put("settle_ms", 700))
         } catch (e: Exception) {
             errorResult("launch_failed", e.message ?: "")
         }

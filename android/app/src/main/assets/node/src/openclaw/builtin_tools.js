@@ -53,17 +53,48 @@ function registerBuiltinTools() {
   }, async (args) => {
     const client = peerStart.client && peerStart.client();
     if (!client) {
-      return { ok: false, error: 'peer_not_paired', hint: 'The user has not paired this phone with a Mac yet. Tell them to pair via the app\'s onboarding step 3 and try again.' };
+      return {
+        ok: false,
+        error: 'peer_not_paired',
+        hint: 'The user has not paired this phone with a Mac yet. Tell them to pair via the app\'s onboarding step 3 and try again.',
+      };
     }
     const timeoutMs = Math.max(5000, parseInt(args.timeout_ms, 10) || 60_000);
-    let result;
-    try {
-      result = await client.call('peer.run_task', { task: args.task || '' }, { timeoutMs });
-    } catch (e) {
-      return { ok: false, error: 'peer_call_failed:' + (e && e.message ? e.message : String(e)) };
+    // Method name resolution:
+    //   Newer omniclaw exposes `task.run`. Older builds expose `peer.run_task`.
+    //   We try the new name first, then fall back on `unknown_method`. If
+    //   BOTH come back unknown_method, the Mac side does not implement
+    //   cross-device task delegation at all - we surface a user-readable
+    //   error rather than the raw RPC string. Mac-side migration is tracked
+    //   in android/MIGRATION_TODO.md item #1.
+    const candidateMethods = ['task.run', 'peer.run_task'];
+    let lastErr = null;
+    for (const method of candidateMethods) {
+      try {
+        const result = await client.call(method, { task: args.task || '' }, { timeoutMs });
+        if (result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'ok')) return result;
+        return { ok: true, result };
+      } catch (e) {
+        const msg = (e && e.message) ? String(e.message) : String(e);
+        lastErr = msg;
+        // Try the next candidate only on unknown-method, never on
+        // network/timeout errors (those would just hang the user twice).
+        const isUnknownMethod = msg.includes('unknown_method') || msg.includes('method_not_found');
+        if (!isUnknownMethod) break;
+      }
     }
-    if (result && typeof result === 'object' && Object.prototype.hasOwnProperty.call(result, 'ok')) return result;
-    return { ok: true, result };
+    if (lastErr && (lastErr.includes('unknown_method') || lastErr.includes('method_not_found'))) {
+      return {
+        ok: false,
+        error: 'peer_no_task_handler',
+        hint: 'The paired Mac does not expose a task-delegation handler. Tell the user their Mac needs the latest omniclaw daemon (with task.run) running. Until then, you cannot delegate to the Mac.',
+      };
+    }
+    return {
+      ok: false,
+      error: 'peer_call_failed',
+      hint: 'Cross-device call to the Mac failed: ' + (lastErr || 'unknown'),
+    };
   });
 
   // ============================================================
@@ -113,15 +144,63 @@ function registerBuiltinTools() {
     // The Kotlin bridge returns { generation, count, root: <node> }; walk
     // from .root, not from the envelope.
     const startNode = (tree && tree.root) ? tree.root : tree;
-    const matches = findNodes(startNode, (n) => {
-      if (!n) return false;
-      const fields = [n.text, n.contentDescription, n.label].filter(Boolean).map(String);
-      return fields.some((f) => f.toLowerCase().includes(text.toLowerCase()));
-    });
-    if (matches.length === 0) {
-      return { ok: false, error: 'no_visible_match', hint: 'Take a screenshot first and try vision.locate_text, or call ui.read_screen to inspect what is visible.' };
+
+    // v0.1.7: tiered fuzzy matching.
+    //   tier 1: exact case-insensitive substring on text/contentDescription/label
+    //   tier 2: token-prefix match - any visible field's first token starts
+    //           with our query ("Pragati" matches "Pragati Biradar",
+    //           "Pragati B" matches "Pragati Biradar"). This is the fix for
+    //           the reported "couldn't find Pragati on WhatsApp Chats list"
+    //           failure on Samsung S24 - real WhatsApp contact rows contain
+    //           the full name in contentDescription, not just the first name.
+    //   tier 3: diacritic-stripped + whitespace-collapsed substring match
+    //           ("Bjorn" matches "Björn").
+    // Prefer clickable matches over non-clickable when ties exist.
+    const normalize = (s) => String(s || '')
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // strip diacritics
+      .replace(/[\u00A0]/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+    const wanted = normalize(text);
+    function fieldsOf(n) {
+      return [n.text, n.contentDescription, n.label].filter(Boolean).map(String);
     }
-    const target = matches[0];
+    function tierForNode(n) {
+      if (!n) return 99;
+      const fields = fieldsOf(n);
+      if (fields.length === 0) return 99;
+      // tier 1: literal substring (lowercased)
+      for (const f of fields) {
+        if (f.toLowerCase().includes(text.toLowerCase())) return 1;
+      }
+      // tier 2: token-prefix
+      for (const f of fields) {
+        const tokens = f.split(/\s+/).filter(Boolean).map((t) => t.toLowerCase());
+        if (tokens.length === 0) continue;
+        if (tokens.some((t) => t.startsWith(text.toLowerCase()))) return 2;
+        // multi-token prefix: "Pragati B" -> "Pragati B(iradar)"
+        const joined = tokens.join(' ');
+        if (joined.startsWith(text.toLowerCase())) return 2;
+      }
+      // tier 3: diacritic-stripped substring
+      for (const f of fields) {
+        if (normalize(f).includes(wanted)) return 3;
+      }
+      return 99;
+    }
+    const ranked = findNodes(startNode, (n) => tierForNode(n) < 99)
+      .map((n) => ({ node: n, tier: tierForNode(n), clickable: !!n.clickable }))
+      .sort((a, b) => {
+        if (a.tier !== b.tier) return a.tier - b.tier;
+        if (a.clickable !== b.clickable) return a.clickable ? -1 : 1;
+        return 0;
+      });
+    if (ranked.length === 0) {
+      return {
+        ok: false,
+        error: 'no_visible_match',
+        hint: 'No node had text/contentDescription/label matching "' + text + '" (tried exact, token-prefix, and diacritic-stripped match). Try ui.read_screen to inspect what is visible, or ui.screenshot + vision.locate_text for visual-only matches.',
+      };
+    }
+    const target = ranked[0].node;
     if (target.ax_id) {
       try { await kotlin.ax.click(target.ax_id); return { ok: true, result: { tapped: true, ax_id: target.ax_id } }; }
       catch (_) { /* fall through to coords */ }
@@ -341,7 +420,7 @@ function registerBuiltinTools() {
 
   register({
     name: 'vision.read_screen',
-    description: 'Take a screenshot and ask a multimodal LLM (gpt-4o) to extract / describe / answer a question about what is on screen. Use this when text-only OCR is not enough (e.g. "what color is the chart?", "list every notification with sender + preview"). Sensitivity: image leaves the device, sent to OpenAI. Returns { answer, model }.',
+    description: 'Take a screenshot and ask a multimodal LLM (tries gpt-5.5 first, falls back to gpt-4o, then gpt-4o-mini) to extract / describe / answer a question about what is on screen. Use this when text-only OCR is not enough (e.g. "what color is the chart?", "list every notification with sender + preview"). Sensitivity: image leaves the device, sent to OpenAI. Returns { answer, model, fallback_chain }.',
     parameters: {
       type: 'object',
       properties: {
@@ -365,37 +444,132 @@ function registerBuiltinTools() {
     let key;
     try { const s = await kotlin.secrets.openai(); key = s && s.key; } catch (e) { return { ok: false, error: 'secrets_unavailable:' + e.message }; }
     if (!key) return { ok: false, error: 'no_openai_key', hint: 'User must paste their OpenAI key in onboarding step 2 / settings.' };
-    const body = {
-      model: 'gpt-4o',
-      max_tokens: Math.min(2000, parseInt(args.max_tokens, 10) || 600),
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'text', text: args.question || 'Describe this screen.' },
-          { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64, detail: args.detail || 'auto' } },
-        ],
-      }],
-    };
     const fetchFn = (typeof fetch === 'function') ? fetch : null;
     if (!fetchFn) return { ok: false, error: 'fetch_unavailable_in_runtime' };
-    let resp;
-    try {
-      resp = await fetchFn('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
-        body: JSON.stringify(body),
-      });
-    } catch (e) {
-      return { ok: false, error: 'vision_request_failed:' + e.message };
+    // Vision-model fallback chain. Order: head = newest/highest-quality,
+    // tail = oldest/cheapest. We walk down the list on transient or
+    // model-availability errors and return the first answer that comes
+    // back successfully. Order chosen to match android_vision.js + the
+    // rest of the Mac-side fleet so behaviour is consistent across devices.
+    const models = ['gpt-5.5', 'gpt-4o', 'gpt-4o-mini'];
+    const maxTokens = Math.min(2000, parseInt(args.max_tokens, 10) || 600);
+    const detail = args.detail || 'auto';
+    const question = args.question || 'Describe this screen.';
+    const tried = [];
+
+    /**
+     * Per-model output-budget param. The gpt-5* and o* families rejected
+     * the legacy `max_tokens` field with HTTP 400 starting around 2025-09;
+     * they require `max_completion_tokens` instead. The gpt-4o family
+     * still accepts `max_tokens`. We pick the right one based on the
+     * model name prefix; if the API surprises us we recover by retrying
+     * with the other one (see "Unsupported parameter" handling below).
+     */
+    function tokenBudgetParam(model) {
+      const m = (model || '').toLowerCase();
+      if (m.startsWith('gpt-5') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) {
+        return 'max_completion_tokens';
+      }
+      return 'max_tokens';
     }
-    if (!resp.ok) {
+
+    async function callModel(model, budgetParam) {
+      const body = {
+        model,
+        [budgetParam]: maxTokens,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: question },
+            { type: 'image_url', image_url: { url: 'data:image/png;base64,' + b64, detail } },
+          ],
+        }],
+      };
+      try {
+        const resp = await fetchFn('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + key },
+          body: JSON.stringify(body),
+        });
+        return { resp };
+      } catch (e) {
+        return { networkError: e.message || String(e) };
+      }
+    }
+
+    for (const model of models) {
+      let budgetParam = tokenBudgetParam(model);
+      let { resp, networkError } = await callModel(model, budgetParam);
+      if (networkError) {
+        tried.push({ model, network_error: networkError });
+        continue;
+      }
+      // Defense-in-depth for our per-model token-budget guess: if OpenAI
+      // says "Unsupported parameter: 'max_tokens'" or vice-versa, retry the
+      // SAME model with the other param name. This survives future model
+      // releases that change which family they belong to.
+      if (resp.status === 400) {
+        const errText = await resp.text().catch(() => '');
+        const wantsCompletion = errText.includes("Unsupported parameter: 'max_tokens'");
+        const wantsLegacy = errText.includes("Unsupported parameter: 'max_completion_tokens'");
+        if (wantsCompletion || wantsLegacy) {
+          const altParam = wantsCompletion ? 'max_completion_tokens' : 'max_tokens';
+          tried.push({ model, switched_param_to: altParam });
+          const alt = await callModel(model, altParam);
+          if (alt.networkError) {
+            tried.push({ model, network_error: alt.networkError });
+            continue;
+          }
+          resp = alt.resp;
+        } else {
+          // Some other 400 - try next model rather than re-issuing the
+          // exact same broken request.
+          tried.push({ model, status: 400, body: errText.slice(0, 200) });
+          continue;
+        }
+      }
+      if (resp.ok) {
+        const json = await resp.json().catch(() => null);
+        const answer = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
+        if (!answer) {
+          tried.push({ model, error: 'no_content_in_response' });
+          continue;
+        }
+        return { ok: true, result: { answer, model, fallback_chain: tried } };
+      }
+      const status = resp.status;
       const errText = await resp.text().catch(() => '');
-      return { ok: false, error: 'vision_http_' + resp.status, hint: errText.slice(0, 300) };
+      tried.push({ model, status, body: errText.slice(0, 200) });
+      // 401 / 403: bad API key. Trying another model won't help.
+      if (status === 401 || status === 403) {
+        return {
+          ok: false,
+          error: 'vision_auth_failed',
+          status,
+          hint: 'OpenAI rejected the API key. Tell the user to refresh their key in settings.',
+          attempts: tried,
+        };
+      }
+      // 404 model_not_found / 429 rate limit / 5xx server error: walk down
+      // the chain (other models may have different availability).
+      if (status === 404 || status === 429 || (status >= 500 && status < 600)) {
+        continue;
+      }
+      // Other unknown 4xx (invalid request, oversize image, etc.): no point
+      // retrying with another model on the same input.
+      return {
+        ok: false,
+        error: 'vision_http_' + status,
+        hint: errText.slice(0, 300),
+        attempts: tried,
+      };
     }
-    const json = await resp.json().catch(() => null);
-    const answer = json && json.choices && json.choices[0] && json.choices[0].message && json.choices[0].message.content;
-    if (!answer) return { ok: false, error: 'vision_no_content', raw: json };
-    return { ok: true, result: { answer, model: 'gpt-4o' } };
+    return {
+      ok: false,
+      error: 'vision_all_models_failed',
+      hint: 'All vision models failed. The user may be offline, rate-limited, or out of OpenAI quota.',
+      attempts: tried,
+    };
   });
 }
 

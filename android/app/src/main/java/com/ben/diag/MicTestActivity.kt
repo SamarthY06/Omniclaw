@@ -20,6 +20,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.ben.R
+import com.ben.service.BenVoiceService
 import com.ben.service.BenWakewordService
 import com.ben.util.BenSecrets
 import java.text.SimpleDateFormat
@@ -67,12 +68,19 @@ class MicTestActivity : AppCompatActivity() {
             val ts = intent.getLongExtra(BenWakewordService.EXTRA_TS, System.currentTimeMillis())
             val kind = intent.getStringExtra(BenWakewordService.EXTRA_KIND) ?: "?"
             val detail = intent.getStringExtra(BenWakewordService.EXTRA_DETAIL) ?: ""
-            appendLog(ts, kind, detail)
-            // WAKE_MATCH means the listener is about to hand off to
-            // BenVoiceService; refresh the running/paused state.
+            appendLog(ts, "WAKE/$kind", detail)
             if (kind == "WAKE_MATCH" || kind == "RESTART" || kind == "ERROR") {
                 refreshState()
             }
+        }
+    }
+
+    private val voiceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val ts = intent.getLongExtra(BenVoiceService.EXTRA_TS, System.currentTimeMillis())
+            val kind = intent.getStringExtra(BenVoiceService.EXTRA_KIND) ?: "?"
+            val detail = intent.getStringExtra(BenVoiceService.EXTRA_DETAIL) ?: ""
+            appendLog(ts, "VOICE/$kind", detail)
         }
     }
 
@@ -97,14 +105,21 @@ class MicTestActivity : AppCompatActivity() {
         clearLog.setOnClickListener {
             log.setLength(0)
             BenWakewordService.eventBuffer.clear()
+            BenVoiceService.voiceEventBuffer.clear()
             logView.text = "(log cleared - say your wake phrase now)"
         }
 
-        // Seed log with whatever events the service already buffered before
-        // the user opened this screen.
+        // Seed log with whatever events the wake AND voice services already
+        // buffered before the user opened this screen. Merge by timestamp
+        // so the user sees a single chronological stream.
+        val seeded = mutableListOf<Triple<Long, String, String>>()
         for (ev in BenWakewordService.eventBuffer) {
-            appendLog(ev.ts, ev.kind.name, ev.detail)
+            seeded += Triple(ev.ts, "WAKE/${ev.kind.name}", ev.detail)
         }
+        for (ev in BenVoiceService.voiceEventBuffer) {
+            seeded += Triple(ev.ts, "VOICE/${ev.kind}", ev.detail)
+        }
+        seeded.sortedBy { it.first }.forEach { (ts, kind, detail) -> appendLog(ts, kind, detail) }
         if (log.isEmpty()) {
             logView.text = "(no events yet — say your wake phrase now)"
         }
@@ -114,12 +129,15 @@ class MicTestActivity : AppCompatActivity() {
         super.onResume()
         LocalBroadcastManager.getInstance(this)
             .registerReceiver(receiver, IntentFilter(BenWakewordService.ACTION_EVENT))
+        LocalBroadcastManager.getInstance(this)
+            .registerReceiver(voiceReceiver, IntentFilter(BenVoiceService.ACTION_VOICE_EVENT))
         refreshState()
     }
 
     override fun onPause() {
         super.onPause()
         LocalBroadcastManager.getInstance(this).unregisterReceiver(receiver)
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(voiceReceiver)
     }
 
     private fun appendLog(ts: Long, kind: String, detail: String) {

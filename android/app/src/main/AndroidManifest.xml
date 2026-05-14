@@ -82,7 +82,13 @@
             android:taskAffinity=""
             android:noHistory="true" />
 
-        <!-- Catches the jarvis://pair URI when the user taps a link variant. -->
+        <!--
+            Pairing deep links: accept BOTH `ben://pair` (the canonical
+            new scheme post-rebrand) and `jarvis://pair` (legacy, kept
+            so QR codes from older Mac builds still scan). Single
+            activity-alias with two <data> entries inside one
+            <intent-filter> matches if EITHER scheme/host pair fires.
+        -->
         <activity-alias
             android:name=".pairing.PairingDeepLink"
             android:targetActivity=".pairing.PairingActivity"
@@ -91,6 +97,7 @@
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="ben" android:host="pair" />
                 <data android:scheme="jarvis" android:host="pair" />
             </intent-filter>
         </activity-alias>

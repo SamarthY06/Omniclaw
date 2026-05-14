@@ -1,12 +1,27 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+    Ben accessibility service config.
+
+    Why no `flagRequestTouchExplorationMode`:
+        That flag enables TalkBack-style exploration where every tap is
+        first consumed by the accessibility service. It bricks normal
+        touch input as soon as Ben is enabled. Our service is poll-driven
+        (BenAccessibilityService.onAccessibilityEvent is a no-op); we
+        don't need to intercept touches.
+
+    Why `packageNames` is omitted (not `@null`):
+        Per AOSP docs, omitting the attribute means "deliver events for
+        all packages". Setting it to a `@null` resource has been observed
+        to resolve to an empty array on Samsung One UI 6+, silently
+        starving the service of events. Omit it instead.
+-->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewClicked|typeViewFocused"
     android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows|flagRequestTouchExplorationMode"
+    android:accessibilityFlags="flagDefault|flagIncludeNotImportantViews|flagReportViewIds|flagRetrieveInteractiveWindows"
     android:canPerformGestures="true"
     android:canRequestFilterKeyEvents="false"
     android:canRetrieveWindowContent="true"
     android:description="@string/accessibility_service_description"
     android:notificationTimeout="64"
-    android:packageNames="@null"
     android:settingsActivity="com.ben.settings.SettingsActivity" />

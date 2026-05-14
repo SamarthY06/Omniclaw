@@ -11,6 +11,7 @@ import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.util.Log
+import java.util.Locale
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.ben.util.BenSecrets
 import com.ben.wake.WakePhraseMatcher
@@ -34,6 +35,22 @@ import java.util.concurrent.ConcurrentLinkedDeque
  * v0.1.3: also drops EXTRA_PREFER_OFFLINE on the second consecutive
  * ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT / ERROR_LANGUAGE_NOT_SUPPORTED so a
  * device without an offline en-US pack can still wake.
+ *
+ * v0.1.6: real-device finding on a Samsung One UI 6 phone set to en-IN:
+ * the recognizer was rejecting ALL requests with ERROR_LANGUAGE_UNAVAILABLE
+ * (code 13) in a tight loop. Root cause was two-fold:
+ *   1. The intent set EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE=true with
+ *      EXTRA_LANGUAGE="en-US". The on-device recognizer on this phone only
+ *      had en-IN installed; with the strict "only return preference" flag
+ *      set, any locale mismatch hard-fails instead of degrading gracefully.
+ *   2. The previous network-recognizer fallback flipped EXTRA_PREFER_OFFLINE
+ *      off but kept asking for the same en-US locale, AND on Android 12+ we
+ *      were still using `createOnDeviceSpeechRecognizer` (the network
+ *      fallback never actually engaged).
+ * Fix: drop the strict-preference flag, cycle through a candidate locale
+ * list [en-US, en-IN, en-GB, system-default, no-locale], and force-switch
+ * to the network recognizer on ERROR_LANGUAGE_UNAVAILABLE specifically
+ * (instead of only after two consecutive errors).
  */
 class BenWakewordService : Service() {
     private val tag = "BenWakewordService"
@@ -43,7 +60,29 @@ class BenWakewordService : Service() {
     private var paused: Boolean = false
     private var wantsRestart: Boolean = true
     private var preferOffline: Boolean = true
+    private var useOnDeviceRecognizer: Boolean = true
     private var consecutiveErrors: Int = 0
+    private var localeIndex: Int = 0
+
+    /**
+     * Candidate locales in priority order. We start with en-US (most likely
+     * to work on a US-locale phone), then en-IN (the most common Indian
+     * English variant the user is on per the real-device log), then en-GB,
+     * then the device default, and finally an empty string which tells the
+     * recognizer "use whatever you've got". On ERROR_LANGUAGE_UNAVAILABLE
+     * we walk the list; on ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT we stay on
+     * the current locale.
+     *
+     * Computed lazily because Locale.getDefault() needs a Context lifecycle.
+     */
+    private val candidateLocales: List<String> by lazy {
+        val default = Locale.getDefault().toLanguageTag().ifBlank { "" }
+        listOf("en-US", "en-IN", "en-GB", default, "")
+            .distinct()
+            .filter { it == "" || it.startsWith("en", ignoreCase = true) || it.isBlank() }
+    }
+    private val currentLocale: String
+        get() = candidateLocales.getOrElse(localeIndex) { "" }
 
     // Defensive auto-resume: if BenVoiceService crashes (or its hard cap
     // fails to fire), we'd otherwise stay paused forever and never wake
@@ -93,7 +132,9 @@ class BenWakewordService : Service() {
                 wantsRestart = true
                 consecutiveErrors = 0
                 preferOffline = true
-                emit(EventKind.RESTART, "manual force restart from MicTestActivity")
+                useOnDeviceRecognizer = true
+                localeIndex = 0
+                emit(EventKind.RESTART, "manual force restart from MicTestActivity (reset locale + recognizer)")
                 restartShortly()
             }
         }
@@ -113,27 +154,40 @@ class BenWakewordService : Service() {
     private fun startListening() {
         if (paused || !wantsRestart) return
         val ctx = applicationContext
-        val sr = if (Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)) {
+        // useOnDeviceRecognizer is flipped off when we see ERROR_LANGUAGE_UNAVAILABLE
+        // so a stubborn on-device pack can be sidestepped by the cloud recognizer.
+        val sr = if (useOnDeviceRecognizer &&
+                     Build.VERSION.SDK_INT >= 31 &&
+                     SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
         } else {
             SpeechRecognizer.createSpeechRecognizer(ctx)
         }
         sr.setRecognitionListener(listener)
         recognizer = sr
+        val locale = currentLocale
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-            // EXTRA_PREFER_OFFLINE flips off after consecutive errors so a
-            // device without the en-US offline pack can still wake.
             if (preferOffline) {
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
             }
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 1500L)
-            // Pin to English regardless of the system locale.
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-US")
-            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, true)
+            // Suggest a locale, but DO NOT set EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE.
+            // The strict-preference flag is what was making Samsung's
+            // en-IN-only on-device pack hard-reject our en-US request with
+            // ERROR_LANGUAGE_UNAVAILABLE in a tight loop. Letting the
+            // recognizer fall back to whatever locale it has installed is the
+            // forgiving behaviour we want for wake-word detection - we don't
+            // care about transcription quality at this stage, just whether
+            // the user said something close to "Ben".
+            if (locale.isNotBlank()) {
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, locale)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, locale)
+            }
         }
+        val recognizerKind = if (useOnDeviceRecognizer && Build.VERSION.SDK_INT >= 31 && SpeechRecognizer.isOnDeviceRecognitionAvailable(ctx)) "on-device" else "network"
+        emit(EventKind.RESTART, "starting recognizer=$recognizerKind locale='${locale.ifBlank { "(none)" }}' preferOffline=$preferOffline")
         try {
             sr.startListening(intent)
         } catch (e: Exception) {
@@ -186,16 +240,48 @@ class BenWakewordService : Service() {
             val name = errorName(error)
             emit(EventKind.ERROR, "$name (code=$error)")
             consecutiveErrors++
+
+            // ERROR_LANGUAGE_UNAVAILABLE / ERROR_LANGUAGE_NOT_SUPPORTED:
+            // walk the candidate locale list AND force the network recognizer.
+            // No need to wait two errors - a locale mismatch is permanent
+            // until we change the request, so spinning on it is pointless.
+            if (error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ||
+                error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED) {
+                val wasOnDevice = useOnDeviceRecognizer
+                val oldLocale = currentLocale
+                if (localeIndex < candidateLocales.lastIndex) {
+                    localeIndex++
+                    emit(EventKind.RESTART, "locale '${oldLocale.ifBlank { "(none)" }}' unavailable -> retry with '${currentLocale.ifBlank { "(none)" }}'")
+                } else if (wasOnDevice) {
+                    // Exhausted locales on the on-device recognizer.
+                    // Switch to network recognizer and rewind the locale
+                    // walk - the network side often supports more locales.
+                    useOnDeviceRecognizer = false
+                    preferOffline = false
+                    localeIndex = 0
+                    emit(EventKind.RESTART, "exhausted locales on on-device recognizer -> switching to NETWORK recognizer")
+                    Log.w(tag, "Locale list exhausted on on-device recognizer; falling back to network recognizer")
+                } else {
+                    // Already on network recognizer and still failing.
+                    // Drop the locale extra entirely (empty index) and
+                    // hope the recognizer defaults to whatever it has.
+                    localeIndex = candidateLocales.indexOf("").coerceAtLeast(candidateLocales.lastIndex)
+                    emit(EventKind.ERROR, "locale list exhausted on network recognizer; falling back to no-locale request")
+                    Log.w(tag, "Locale list exhausted on network recognizer; falling back to no-locale request")
+                }
+                restartShortly(150)
+                return
+            }
+
             // After two consecutive recoverable errors, flip off offline
             // preference so we try the network recognizer once. Most likely
             // cause of repeated ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT on a
             // fresh device is a missing offline en-US pack.
             if (consecutiveErrors >= 2 && preferOffline &&
                 (error == SpeechRecognizer.ERROR_NO_MATCH ||
-                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT ||
-                 error == SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED ||
-                 error == SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE)) {
+                 error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)) {
                 preferOffline = false
+                useOnDeviceRecognizer = false
                 emit(EventKind.RESTART, "two consecutive recoverable errors -> falling back to network recognizer")
                 Log.w(tag, "Falling back to network recognizer after $consecutiveErrors consecutive recoverable errors")
             }

@@ -145,12 +145,48 @@ function handleLine(socket, line, workspace) {
         sessionTimer().markActivity('assistant_text');
         result = { ok: true };
         break;
-      case 'peer.pair_now':
+      case 'peer.pair_now': {
         // Re-trigger the peer client so it picks up the new secret.
         const startMod = require('../peer/start.js');
         startMod.repair();
         result = { ok: true };
         break;
+      }
+      case 'peer.pair_status': {
+        // Return the live state of the peer client. This is the call the
+        // Kotlin PairingActivity polls after peer.pair_now to verify the
+        // handshake actually completed before showing "paired" to the user.
+        // Result shape:
+        //   { ok: true, paired: bool, last_error?: string, endpoint?: string }
+        // We do an active liveness probe via peer.ping when the client
+        // exists - this catches the case where the WSS opened but the
+        // remote daemon is now unresponsive. Done async so the RPC reply
+        // doesn't block the inbound socket loop.
+        const startMod = require('../peer/start.js');
+        const client = startMod.client && startMod.client();
+        if (!client) {
+          // Defer the reply slightly so handleLine's switch doesn't double
+          // -reply via the catch-all `reply(socket, id, { result })` below.
+          reply(socket, id, { result: { ok: true, paired: false, last_error: 'peer_client_not_started' } });
+          return;
+        }
+        Promise.resolve()
+          .then(async () => {
+            try {
+              await client.call('peer.ping', { ts_ms: Date.now() }, { timeoutMs: 3000 });
+              return { ok: true, paired: true };
+            } catch (e) {
+              return {
+                ok: true,
+                paired: false,
+                last_error: (e && e.message) ? e.message : String(e),
+              };
+            }
+          })
+          .then((status) => reply(socket, id, { result: status }))
+          .catch((err) => reply(socket, id, { result: { ok: true, paired: false, last_error: (err && err.message) || String(err) } }));
+        return;
+      }
       default:
         return reply(socket, id, { error: { message: 'unknown_method:' + method } });
     }

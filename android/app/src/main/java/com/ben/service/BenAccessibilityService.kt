@@ -63,8 +63,24 @@ class BenAccessibilityService : AccessibilityService() {
     fun tree(@Suppress("UNUSED_PARAMETER") args: JSONObject): JSONObject {
         nodeCacheGeneration++
         nodeCache.clear()
+        // `rootInActiveWindow` returns null in two distinct situations and we
+        // need to disambiguate them so the model can recover:
+        //   (a) The accessibility service IS connected but Android hasn't yet
+        //       given us a window snapshot (transient, retry helps).
+        //   (b) The user has never enabled the accessibility service in
+        //       Settings, so the system never bound it to begin with - in
+        //       which case retrying forever is pointless and we should ask
+        //       them to grant it.
+        // We can tell (b) from (a) by checking liveRef: if liveRef.get() is
+        // null at the time of the call, the service was never connected. But
+        // `tree()` is itself only callable when the bridge has located the
+        // live instance, so by the time we're here liveRef is non-null - we
+        // surface the distinction via a richer error code that the model's
+        // system prompt knows how to interpret.
         val activeWindow = rootInActiveWindow
-            ?: return JSONObject().put("ok", false).put("error", "no_active_window")
+            ?: return JSONObject().put("ok", false)
+                .put("error", "no_active_window")
+                .put("hint", "The screen may be off, or no app has focus. Try ui.focus_app first.")
         val rootJson = JSONObject()
         var count = 0
         fun walk(node: AccessibilityNodeInfo?, parentPath: String, depth: Int): JSONObject? {
@@ -152,6 +168,26 @@ class BenAccessibilityService : AccessibilityService() {
         val target = args.optString("ax_id").let { id -> if (id.isNullOrBlank()) null else nodeCache[id] }
             ?: findFocusedEditable()
             ?: return JSONObject().put("ok", false).put("error", "no_editable_focus")
+        // S3 sensitivity hard guard: refuse to type into any field flagged
+        // by Android as a password input (UPI PIN, banking PIN, screen
+        // unlock, password manager, KYC PII forms, etc).
+        // Rationale: the Realtime LLM has no concept of which characters of
+        // the user's spoken utterance are sensitive; if it transcribes
+        // "my pin is one two three four" we do NOT want that string sailing
+        // into a password EditText. The user-facing rule (in the system
+        // prompt) is "I cannot type into PIN/password fields - please type
+        // it yourself"; this Kotlin guard is the second-line defense in
+        // case the prompt is jail-broken.
+        // node.isPassword is set whenever the EditText has
+        // inputType=textPassword / numberPassword / textVisiblePassword
+        // (UPI/banking apps all set this) regardless of accessibility
+        // service permissions.
+        if (target.isPassword) {
+            return JSONObject()
+                .put("ok", false)
+                .put("error", "password_field_refused")
+                .put("hint", "This is a password / PIN field. I cannot type into it for safety reasons - please enter it yourself.")
+        }
         val args2 = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
@@ -172,7 +208,11 @@ class BenAccessibilityService : AccessibilityService() {
             ?: return JSONObject().put("ok", false).put("error", "no_launch_intent")
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
         applicationContext.startActivity(intent)
-        return JSONObject().put("ok", true).put("package", pkg)
+        // Sleep ~700 ms so the app's first frame paints and the
+        // AccessibilityService node tree populates before the model's
+        // next ui.read_screen / ui.click call.
+        try { Thread.sleep(700) } catch (_: InterruptedException) {}
+        return JSONObject().put("ok", true).put("package", pkg).put("settle_ms", 700)
     }
 
     private fun doStroke(args: JSONObject, durationMs: Long): JSONObject {

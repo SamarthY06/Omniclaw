@@ -6,6 +6,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
@@ -28,8 +29,32 @@ class BenForegroundService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        startForeground(NOTIFICATION_ID, buildNotification(idle = true))
-        // Boot embedded node + wake-word listener.
+        // Android 14 (API 34) made the 2-arg startForeground throw
+        // ForegroundServiceTypeException for any service that declared a
+        // foregroundServiceType in the manifest. Our manifest declares
+        // microphone|specialUse for this service, so we MUST pass those
+        // exact bits via the 3-arg overload on Q+. On older OS versions the
+        // 3-arg overload didn't exist; fall back to the 2-arg one.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val typeBits = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            try {
+                startForeground(NOTIFICATION_ID, buildNotification(idle = true), typeBits)
+            } catch (e: Exception) {
+                // Some OEM ROMs reject specialUse - retry with microphone only.
+                // We always need MICROPHONE for the wake-word path; SPECIAL_USE
+                // is only the catch-all that documents what specialUse means.
+                Log.w(tag, "startForeground(MIC|SPECIAL_USE) failed; retrying MIC only", e)
+                startForeground(
+                    NOTIFICATION_ID,
+                    buildNotification(idle = true),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+                )
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            startForeground(NOTIFICATION_ID, buildNotification(idle = true))
+        }
         startService(Intent(this, NodeBridgeService::class.java))
         startService(Intent(this, BenWakewordService::class.java))
     }

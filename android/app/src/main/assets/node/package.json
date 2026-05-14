@@ -1,10 +1,11 @@
 {
+  "_comment": "engines is pinned to ^18 because nodejs-mobile prebuilts (see android/scripts/fetch-nodejs-mobile.sh) ship Node v18.20.4 - the runtime that actually executes this code on-device. Setting engines:>=20 here was misleading; everything still ran but lint and CI assumed APIs that don't exist on 18.",
   "name": "ben-embedded-node",
   "version": "0.1.0",
   "private": true,
   "main": "index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=18 <19"
   },
   "dependencies": {
     "openclaw": "^2026.5.6",
